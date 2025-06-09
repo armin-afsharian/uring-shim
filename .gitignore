@@ -1,0 +1,52 @@
+# Object files
+*.o
+*.obj
+
+# Executables
+*.exe
+*.out
+a.out
+
+# Shared libraries and DLLs
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# Static libraries
+*.a
+*.lib
+
+# Build output directories
+build/
+bin/
+out/
+target/
+
+# Editor backup files
+*~
+*.swp
+*.swo
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Precompiled headers
+*.gch
+*.pch
+
+# Other build artifacts
+*.map
+*.exp
+*.ilk
+*.lst
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
