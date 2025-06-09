@@ -1,12 +1,7 @@
 # Compiler and flags
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -g -pthread -I io_uring.h
-LDFLAGS = -luring -levent -levent_pthreads
-
-CUSTOM_INCLUDE_DIR = ./include
-
-# Include and library flags for custom library[1]
-INCLUDES = -I$(CUSTOM_INCLUDE_DIR)
+CFLAGS = -Wall -Wextra -std=c99 -g -pthread -I..
+LDFLAGS = -L../build -Wl,-rpath=../build -luring_shim -luring -levent -levent_pthreads
 
 # Source files
 SERVER_SRC = server.c
@@ -14,25 +9,25 @@ SERVER_LIBEVENT_SRC = server_multithread_libevent.c
 CLIENT_SRC = client.c
 
 # Target executables
-SERVER_TARGET = server
-SERVER_LIBEVENT_TARGET = server_libevent
-CLIENT_TARGET = client
+SERVER_TARGET = server.out
+SERVER_LIBEVENT_TARGET = server_libevent.out
+CLIENT_TARGET = client.out
 
-# Default target - build both client and server[3][4]
+# Default target - build both client and server
 all: $(SERVER_TARGET) $(CLIENT_TARGET) $(SERVER_LIBEVENT_TARGET)
 
-# Build server with io_uring dependency[3][4]
-$(SERVER_TARGET): $(SERVER_SRC) $(SERVER_HEADERS) $(CUSTOM_INCLUDE_DIR)/io_uring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -o $(SERVER_TARGET) $(SERVER_SRC) $(LDFLAGS)
+# Build server with io_uring dependency
+$(SERVER_TARGET): $(SERVER_SRC) $(SERVER_HEADERS)
+	$(CC) $(CFLAGS) -o $@ $< $ $(LDFLAGS)
 
-$(SERVER_LIBEVENT_TARGET): $(SERVER_LIBEVENT_SRC) $(SERVER_HEADERS) $(CUSTOM_INCLUDE_DIR)/io_uring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -o $(SERVER_LIBEVENT_TARGET) $(SERVER_LIBEVENT_SRC) $(LDFLAGS)
+$(SERVER_LIBEVENT_TARGET): $(SERVER_LIBEVENT_SRC) $(SERVER_HEADERS)
+	$(CC) $(CFLAGS) -o $@ $< $ $(LDFLAGS)
 
-# Build client (no io_uring dependency)[3][4]
+# Build client (no io_uring dependency)
 $(CLIENT_TARGET): $(CLIENT_SRC)
-	$(CC) $(CFLAGS) -o $(CLIENT_TARGET) $(CLIENT_SRC)
+	$(CC) $(CFLAGS) -o $@ $<
 
-# Run server in background, then run client[3]
+# Run server in background, then run client
 run: all
 	@echo "Starting server..."
 	./$(SERVER_TARGET) &
@@ -40,7 +35,7 @@ run: all
 	@echo "Starting client..."
 	./$(CLIENT_TARGET)
 
-# Test with multiple clients[1]
+# Test with multiple clients
 test-multiple: all
 	@echo "Starting server..."
 	./$(SERVER_TARGET) &
@@ -50,11 +45,11 @@ test-multiple: all
 	gnome-terminal -- ./$(CLIENT_TARGET) &
 	gnome-terminal -- ./$(CLIENT_TARGET) &
 
-# Debug server with gdb[3]
+# Debug server with gdb
 debug-server: $(SERVER_TARGET)
 	gdb ./$(SERVER_TARGET)
 
-# Debug client with gdb[3]
+# Debug client with gdb
 debug-client: $(CLIENT_TARGET)
 	gdb ./$(CLIENT_TARGET)
 
@@ -63,9 +58,9 @@ install-deps:
 	sudo apt-get update
 	sudo apt-get install liburing-dev build-essential
 
-# Clean build artifacts[3][4]
+# Clean build artifacts
 clean:
-	rm -f $(SERVER_TARGET) $(CLIENT_TARGET)
+	rm -f $(SERVER_TARGET) $(CLIENT_TARGET) $(SERVER_LIBEVENT_TARGET)
 
 # Check for memory leaks with valgrind
 check-server: $(SERVER_TARGET)
@@ -81,8 +76,8 @@ rebuild: clean all
 help:
 	@echo "Available targets:"
 	@echo "  all           - Build both client and server"
-	@echo "  server        - Build server only"
-	@echo "  client        - Build client only"
+	# @echo "  server        - Build server only"
+	# @echo "  client        - Build client only"
 	@echo "  run           - Build and run server, then client"
 	@echo "  test-multiple - Run server with multiple client instances"
 	@echo "  debug-server  - Run server in gdb"
@@ -94,5 +89,5 @@ help:
 	@echo "  rebuild       - Clean and build"
 	@echo "  help          - Show this help"
 
-# Declare phony targets[4]
+# Declare phony targets
 .PHONY: all run test-multiple debug-server debug-client install-deps clean check-server check-client rebuild help

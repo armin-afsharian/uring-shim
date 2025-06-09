@@ -6,13 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <liburing.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
 #include <event2/event.h>
 #include <event2/thread.h>
-#include "io_uring.h"
+#include <uring_shim.h>
 
 #define MAX_THREADS 4
 #define BACKLOG 128

@@ -8,10 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <liburing.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <io_uring.h>
+#include <uring_shim.h>
 
 #define MAX_EVENTS 64
 #define BUFFER_SIZE 1024
@@ -101,7 +100,7 @@ void req_handler(void *user_data) {
     // printf("Request completed with result: %d\n", conn_data->fd);
 
     char buffer[BUF_SIZE];
-    int ret = uring_shim_read(&shim, conn_data->fd, buffer, 4);
+    int ret = uring_shim_read(&shim, conn_data->fd, buffer, BUF_SIZE);
     if (ret <= 0) {
         fprintf(stderr, "Error reading from fd %d: %s\n", conn_data->fd, strerror(-ret));
         close(conn_data->fd);

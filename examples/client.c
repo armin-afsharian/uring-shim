@@ -1,3 +1,5 @@
+#define _DEFAULT_SOURCE
+
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
@@ -8,6 +10,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
+
 
 #define BUFFER_SIZE 1024
 #define MAX_EVENTS 10
