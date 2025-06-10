@@ -66,7 +66,7 @@ extern int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe
 // IO operations
 extern int uring_shim_recv_multishot(callback_data_t *cb_data, struct io_uring_sqe *sqe, int bgid);
 extern void uring_shim_write(callback_data_t *cb_data, char* buffer, size_t len, struct io_uring_sqe *sqe);
-extern int uring_shim_read(uring_shim_t *shim, int fd, char *buf, size_t len);
+extern int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len);
 
 // Buffer management functions (static inline, remain in header)
 static inline void recycle_buffer(uring_shim_t *shim, buffer_info_t *buf_info) {

@@ -177,7 +177,7 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
     return 0;
 }
 
-int uring_shim_read(uring_shim_t *shim, int fd, char *buf, size_t len) {
+int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
     if (fd < 0 || fd >= MAX_FDS) {
         fprintf(stderr, "Invalid fd %d\n", fd);
         return -1;
@@ -189,8 +189,8 @@ int uring_shim_read(uring_shim_t *shim, int fd, char *buf, size_t len) {
     buffer_info_t *buf_info = shim->fds[fd];
     if (buf_info == NULL) {
         fprintf(stderr, "Buffer info not found for fd %d (after printing list)\n", fd); // Debug
-        return -1; // No data available
-        // TODO: EAGAIN
+        errno = EAGAIN; // No data available
+        return -1;
     }
 
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
@@ -221,7 +221,11 @@ int uring_shim_read(uring_shim_t *shim, int fd, char *buf, size_t len) {
     
     // Copy data from current read position
     char *read_pos = buf_info->buf_addr + buf_info->read_offset;
-    memcpy(buf, read_pos, to_read);
+
+    char **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
+    *buf = read_pos;
+
+    // memcpy(buf, read_pos, to_read);
     
     // Update read offset
     buf_info->read_offset += to_read;
@@ -229,7 +233,14 @@ int uring_shim_read(uring_shim_t *shim, int fd, char *buf, size_t len) {
     // If buffer is fully consumed, recycle it and move to next
     if (buf_info->read_offset >= buf_info->len) {
         buffer_info_t *next = buf_info->next;
-        recycle_buffer(shim, buf_info);
+        // recycle_buffer(shim, buf_info);
+        io_uring_buf_ring_add(shim->br,
+            *temp_buf,
+            shim->buf_size,
+            buf_info->buf_id,
+            io_uring_buf_ring_mask(shim->buf_count),
+            0);
+        io_uring_buf_ring_advance(shim->br, 1);
         free(buf_info);
         shim->fds[fd] = next;
     }
@@ -250,7 +261,6 @@ int uring_shim_handler(uring_shim_t *shim) {
 
     struct io_uring_cqe *cqe;
     unsigned head;
-    unsigned completed = 0;
     
     io_uring_for_each_cqe(&shim->ring, head, cqe) {
         callback_data_t *cb_data = (callback_data_t *)io_uring_cqe_get_data(cqe); // Use accessor
@@ -277,7 +287,6 @@ int uring_shim_handler(uring_shim_t *shim) {
                 append_buffer_info(&shim->fds[cb_data->sockfd], new_info);
             }
         
-
             if (cb_data && cb_data->handler != NULL) {
                 cb_data->handler(cb_data->user_data);
             } else {
@@ -316,13 +325,7 @@ int uring_shim_handler(uring_shim_t *shim) {
         }
 
         io_uring_cq_advance(&shim->ring, 1);
-
-        completed++;
     }
-    // Mark these CQEs as processed
-    // if (completed > 0) {
-    //     io_uring_cq_advance(&shim->ring, completed);
-    // }
-    
+    io_uring_submit(&shim->ring);
     return 0;
 }
