@@ -33,6 +33,7 @@ int server_fd, epoll_fd, event_fd;
 char *buffers; /* buffers for the buffer ring */
 struct io_uring_buf_ring *buf_ring;
 uring_shim_t shim;
+char* buffer;
 
 
 void error_exit(const char *msg) {
@@ -99,8 +100,7 @@ void req_handler(void *user_data) {
     
     // printf("Request completed with result: %d\n", conn_data->fd);
 
-    char buffer[BUF_SIZE];
-    int ret = uring_shim_read(&shim, conn_data->fd, buffer, BUF_SIZE);
+    int ret = uring_shim_read(&shim, conn_data->fd, &buffer, BUF_SIZE);
     if (ret <= 0) {
         fprintf(stderr, "Error reading from fd %d: %s\n", conn_data->fd, strerror(-ret));
         close(conn_data->fd);
@@ -143,6 +143,7 @@ void handle_new_connection() {
 
 int main() {
     server_fd = setup_server_socket(8080);
+    buffer = malloc(BUF_SIZE);
     setup();
     
     printf("Server listening on port 8080\n");
@@ -179,6 +180,7 @@ int main() {
     close(server_fd);
     close(epoll_fd);
     close(event_fd);
+    free(buffer);
     io_uring_queue_exit(&shim.ring);
     return 0;
 }

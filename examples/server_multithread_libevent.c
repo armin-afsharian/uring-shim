@@ -23,6 +23,7 @@ typedef struct thread_context {
     struct event_base *base;
     uring_shim_t shim;
     int thread_id;
+    char* buffer;
 } thread_context_t;
 
 typedef struct conn_data {
@@ -72,19 +73,15 @@ int setup_server_socket(int port) {
 void req_handler(void *user_data) {
     conn_data_t *conn_data = (conn_data_t*)user_data;
     
-    printf("Request completed with result: %d\n", conn_data->fd);
-
-    char buffer[BUF_SIZE];
     int ret = uring_shim_read(&thread_contexts[conn_data->thread_id].shim, 
-                             conn_data->fd, buffer, BUF_SIZE);
+                             conn_data->fd, &thread_contexts[conn_data->thread_id].buffer, BUF_SIZE);
     if (ret <= 0) {
         fprintf(stderr, "Error reading from fd %d: %s\n", conn_data->fd, strerror(-ret));
         close(conn_data->fd);
         free(conn_data);
         return;
     }
-    // printf("Thread %d: Read %d bytes from fd %d: %s\n", 
-    //        conn_data->thread_id, ret, conn_data->fd, buffer);
+    printf("Thread %d: Read %d bytes from fd %d: %s\n", conn_data->thread_id, ret, conn_data->fd, thread_contexts[conn_data->thread_id].buffer);
 }
 
 void handle_uring_event(evutil_socket_t fd __attribute_maybe_unused__, short events __attribute_maybe_unused__, void *arg) {
@@ -169,6 +166,7 @@ int main() {
     // Create worker threads
     for (int i = 0; i < MAX_THREADS; i++) {
         thread_contexts[i].thread_id = i;
+        thread_contexts[i].buffer = malloc(BUF_SIZE);
         if (pthread_create(&threads[i], NULL, worker_thread, &thread_contexts[i]) != 0) {
             error_exit("pthread_create");
         }
@@ -192,6 +190,8 @@ int main() {
     event_base_free(base);
     for (int i = 0; i < MAX_THREADS; i++) {
         event_base_free(thread_contexts[i].base);
+        free(thread_contexts[i].buffer);
+        io_uring_queue_exit(&thread_contexts[i].shim.ring);
     }
     close(server_fd);
     return 0;

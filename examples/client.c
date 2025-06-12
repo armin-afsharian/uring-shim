@@ -69,7 +69,7 @@ void handle_user_input() {
             snprintf(message, sizeof(message), "test%d", i);
             printf("Sending message from keyboard: %s\n", message);
             ssize_t sent = send(client_fd, message, strlen(message), 0);
-            usleep(100000); // Sleep for 1us
+            usleep(100); // Sleep for 1us
             if (sent < 0) {
                 perror("send");
                 return;
