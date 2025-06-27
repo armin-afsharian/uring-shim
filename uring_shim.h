@@ -13,7 +13,7 @@
 #define DEFAULT_QUEUE_DEPTH 256
 #define DEFAULT_BUF_SIZE 4096
 #define DEFAULT_BUFFERS_COUNT 128
-#define MAX_FDS 1024
+#define MAX_FDS 65536
 
 typedef void (*process_handler)(void *user_data);
 
@@ -66,7 +66,8 @@ extern int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe
 // IO operations
 extern int uring_shim_recv_multishot(callback_data_t *cb_data, struct io_uring_sqe *sqe, int bgid);
 extern void uring_shim_write(callback_data_t *cb_data, char* buffer, size_t len, struct io_uring_sqe *sqe);
-extern int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len);
+extern int uring_shim_read(uring_shim_t *shim, int fd, void **buf, size_t len);
+extern int uring_shim_read_copy(uring_shim_t *shim, int fd, void *buf, size_t len);
 
 // Buffer management functions (static inline, remain in header)
 static inline void recycle_buffer(uring_shim_t *shim, buffer_info_t *buf_info) {

@@ -177,7 +177,7 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
     return 0;
 }
 
-int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
+int uring_shim_read_copy(uring_shim_t *shim, int fd, void *buf, size_t len) {
     if (fd < 0 || fd >= MAX_FDS) {
         fprintf(stderr, "Invalid fd %d\n", fd);
         return -1;
@@ -188,7 +188,7 @@ int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
 
     buffer_info_t *buf_info = shim->fds[fd];
     if (buf_info == NULL) {
-        fprintf(stderr, "Buffer info not found for fd %d (after printing list)\n", fd); // Debug
+        //fprintf(stderr, "Buffer info not found for fd %d (after printing list)\n", fd); // Debug
         errno = EAGAIN; // No data available
         return -1;
     }
@@ -222,7 +222,68 @@ int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
     // Copy data from current read position
     char *read_pos = buf_info->buf_addr + buf_info->read_offset;
 
-    char **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
+    memcpy(buf, read_pos, to_read);
+    
+    // Update read offset
+    buf_info->read_offset += to_read;
+    
+    // If buffer is fully consumed, recycle it and move to next
+    if (buf_info->read_offset >= buf_info->len) {
+        buffer_info_t *next = buf_info->next;
+        recycle_buffer(shim, buf_info);
+        free(buf_info);
+        shim->fds[fd] = next;
+    }
+    
+    return to_read;
+}
+
+int uring_shim_read(uring_shim_t *shim, int fd, void **buf, size_t len) {
+    if (fd < 0 || fd >= MAX_FDS) {
+        fprintf(stderr, "Invalid fd %d\n", fd);
+        return -1;
+    }
+    if (len == 0) { // Changed from <= 0 to == 0, as len is size_t (unsigned)
+        return 0;
+    }
+
+    buffer_info_t *buf_info = shim->fds[fd];
+    if (buf_info == NULL) {
+        //fprintf(stderr, "Buffer info not found for fd %d (after printing list)\n", fd); // Debug
+        errno = EAGAIN; // No data available
+        return -1;
+    }
+
+    if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
+        fprintf(stderr, "Buffer id is -1 for fd %d\n", fd); // Debug
+        buffer_info_t *next = buf_info->next;
+        size_t ret = buf_info->len; // This might be error code or 0 for EOF
+        free(buf_info);
+        shim->fds[fd] = next;
+        return ret; // Return the stored result (e.g. 0 for EOF, or error code)
+    }
+
+    // Calculate available data in current buffer
+    size_t available = buf_info->len - buf_info->read_offset;
+
+    if (available == 0) {
+        // Current buffer is fully consumed, move to next
+        buffer_info_t *next = buf_info->next;
+        recycle_buffer(shim, buf_info);
+        free(buf_info);
+        shim->fds[fd] = next;
+        
+        // Recursively try next buffer
+        return uring_shim_read(shim, fd, buf, len);
+    }
+
+    // Determine how much to read
+    size_t to_read = (len < available) ? len : available;
+    
+    // Copy data from current read position
+    char *read_pos = buf_info->buf_addr + buf_info->read_offset;
+
+    void **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
     *buf = read_pos;
 
     // memcpy(buf, read_pos, to_read);
