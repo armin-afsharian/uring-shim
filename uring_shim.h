@@ -49,6 +49,7 @@ typedef struct callback_data {
 enum io_mode {
     RECV,
     RECV_MULTIISHOT,
+    NOP,
     WRITE,
     CANCEL,
 };

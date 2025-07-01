@@ -1,6 +1,8 @@
 #include "uring_shim.h" // Include the header file
 #include <errno.h>     // For strerror
 
+callback_data_t *cb_data_nop = NULL; // Global variable for NOP callback data
+
 // Core initialization functions
 int uring_shim_init(uring_shim_t *shim, int queue_depth) {
     
@@ -121,22 +123,48 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
         fprintf(stderr, "io_uring_get_sqe: failed\n");
         return -1;
     }
-
     callback_data_t *cb_data;
-    
-    // Allocate memory for callback data (must be freed after callback completes)
-    cb_data = malloc(sizeof(callback_data_t));
-    if (!cb_data) {
-        perror("malloc callback_data_t");
-        // Since we got an SQE, we should ideally return it or submit a NOP
-        // For simplicity here, we just return error. Proper handling might involve
-        // io_uring_sqe_set_flags(sqe, IOSQE_IO_DRAIN) or similar if not using it.
-        return -1;
+
+    if (mode == NOP) {
+        if (!cb_data_nop) {
+            // If NOP mode is requested and we already have a global callback data, reuse it
+            cb_data_nop = malloc(sizeof(callback_data_t));
+            cb_data_nop->handler = handler;
+            cb_data_nop->user_data = user_data;
+            cb_data_nop->sockfd = fd;
+            cb_data_nop->mode = mode;
+        }
+        if (cb_data_nop->handler != handler) {
+            printf("LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL\n");
+            
+        }
+        else {
+            printf("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n");
+        }   
     }
-    cb_data->handler = handler;
-    cb_data->user_data = user_data;
-    cb_data->sockfd = fd;
-    cb_data->mode = mode;
+    else if (mode != NOP) {
+
+        
+        // Allocate memory for callback data (must be freed after callback completes)
+        cb_data = malloc(sizeof(callback_data_t));
+        if (!cb_data) {
+            perror("malloc callback_data_t");
+            // Since we got an SQE, we should ideally return it or submit a NOP
+            // For simplicity here, we just return error. Proper handling might involve
+            // io_uring_sqe_set_flags(sqe, IOSQE_IO_DRAIN) or similar if not using it.
+            return -1;
+        }
+        cb_data->handler = handler;
+        cb_data->user_data = user_data;
+        cb_data->sockfd = fd;
+        cb_data->mode = mode;
+    }
+
+
+    if(mode == RECV) {
+        printf("Adding RECV mode for fd %d\n", fd);
+        exit(1);
+    }
 
     switch (mode)
     {
@@ -152,6 +180,11 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
             free(cb_data);
             return -1;
         }
+        break;
+    case NOP:
+        // Prepare a NOP operation
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_data(sqe, cb_data_nop);
         break;
     case WRITE:
         /* not supported directly via event_add, use uring_shim_write */
@@ -325,6 +358,8 @@ int uring_shim_handler(uring_shim_t *shim) {
     
     io_uring_for_each_cqe(&shim->ring, head, cqe) {
         callback_data_t *cb_data = (callback_data_t *)io_uring_cqe_get_data(cqe); // Use accessor
+        printf("Processing CQE: mode=%d, res=%d, fd=%d, handler=%p\n",
+            cb_data->mode, cqe->res, cb_data->sockfd, cb_data->handler);
         char *buf_addr = NULL;
         int buf_idx = 0;
 
@@ -369,6 +404,14 @@ int uring_shim_handler(uring_shim_t *shim) {
         else {
             if (cqe->res < 0) {
                 fprintf(stderr, "CQE error for fd=%d: %s (res=%d)\n", cb_data ? cb_data->sockfd : -1, strerror(-cqe->res), cqe->res);
+            }
+            printf("Processing CQE with mode=%d aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", cb_data->mode);
+            if (cb_data && cb_data->handler != NULL && cb_data->mode == NOP && cqe->res == 0) {
+                printf("NOP operation for fd bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n");
+                cb_data->handler(cb_data->user_data);
+                printf("NOP operation completed for fd %d\n", cb_data->sockfd);
+                // free(cb_data);
+                continue;
             }
             uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL);
             buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
