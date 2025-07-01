@@ -405,11 +405,9 @@ int uring_shim_handler(uring_shim_t *shim) {
             if (cqe->res < 0) {
                 fprintf(stderr, "CQE error for fd=%d: %s (res=%d)\n", cb_data ? cb_data->sockfd : -1, strerror(-cqe->res), cqe->res);
             }
-            printf("Processing CQE with mode=%d aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", cb_data->mode);
             if (cb_data && cb_data->handler != NULL && cb_data->mode == NOP && cqe->res == 0) {
-                printf("NOP operation for fd bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n");
                 cb_data->handler(cb_data->user_data);
-                printf("NOP operation completed for fd %d\n", cb_data->sockfd);
+                io_uring_cq_advance(&shim->ring, 1);
                 // free(cb_data);
                 continue;
             }
