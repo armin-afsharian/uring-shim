@@ -318,8 +318,6 @@ int uring_shim_read(uring_shim_t *shim, int fd, void **buf, size_t len) {
 
     void **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
     *buf = read_pos;
-
-    // memcpy(buf, read_pos, to_read);
     
     // Update read offset
     buf_info->read_offset += to_read;
@@ -357,9 +355,7 @@ int uring_shim_handler(uring_shim_t *shim) {
     unsigned head;
     
     io_uring_for_each_cqe(&shim->ring, head, cqe) {
-        callback_data_t *cb_data = (callback_data_t *)io_uring_cqe_get_data(cqe); // Use accessor
-        printf("Processing CQE: mode=%d, res=%d, fd=%d, handler=%p\n",
-            cb_data->mode, cqe->res, cb_data->sockfd, cb_data->handler);
+        callback_data_t *cb_data = (callback_data_t *)io_uring_cqe_get_data(cqe);
         char *buf_addr = NULL;
         int buf_idx = 0;
 
@@ -408,7 +404,6 @@ int uring_shim_handler(uring_shim_t *shim) {
             if (cb_data && cb_data->handler != NULL && cb_data->mode == NOP && cqe->res == 0) {
                 cb_data->handler(cb_data->user_data);
                 io_uring_cq_advance(&shim->ring, 1);
-                // free(cb_data);
                 continue;
             }
             uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL);
