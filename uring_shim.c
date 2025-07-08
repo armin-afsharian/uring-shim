@@ -6,7 +6,8 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth) {
     
     // Setup io_uring
     struct io_uring_params params = {0};
-    params.flags = IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN;
+    params.flags = IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN | IORING_SETUP_CQSIZE;
+    params.cq_entries = queue_depth * 4;    
     
     int ret = io_uring_queue_init_params(queue_depth, &shim->ring, &params);
     if (ret < 0) {
