@@ -1,8 +1,6 @@
 #include "uring_shim.h" // Include the header file
 #include <errno.h>     // For strerror
 
-callback_data_t *cb_data_nop = NULL; // Global variable for NOP callback data
-
 // Core initialization functions
 int uring_shim_init(uring_shim_t *shim, int queue_depth) {
     
@@ -124,41 +122,16 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
         return -1;
     }
     callback_data_t *cb_data;
+    cb_data = malloc(sizeof(callback_data_t));
 
-    if (mode == NOP) {
-        if (!cb_data_nop) {
-            // If NOP mode is requested and we already have a global callback data, reuse it
-            cb_data_nop = malloc(sizeof(callback_data_t));
-            cb_data_nop->handler = handler;
-            cb_data_nop->user_data = user_data;
-            cb_data_nop->sockfd = fd;
-            cb_data_nop->mode = mode;
-        }
-        if (cb_data_nop->handler != handler) {
-            printf("LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL\n");
-            
-        }
-        else {
-            printf("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\n");
-        }   
+    if (!cb_data) {
+        perror("malloc callback_data_t");
+        return -1;
     }
-    else if (mode != NOP) {
-
-        
-        // Allocate memory for callback data (must be freed after callback completes)
-        cb_data = malloc(sizeof(callback_data_t));
-        if (!cb_data) {
-            perror("malloc callback_data_t");
-            // Since we got an SQE, we should ideally return it or submit a NOP
-            // For simplicity here, we just return error. Proper handling might involve
-            // io_uring_sqe_set_flags(sqe, IOSQE_IO_DRAIN) or similar if not using it.
-            return -1;
-        }
-        cb_data->handler = handler;
-        cb_data->user_data = user_data;
-        cb_data->sockfd = fd;
-        cb_data->mode = mode;
-    }
+    cb_data->handler = handler;
+    cb_data->user_data = user_data;
+    cb_data->sockfd = fd;
+    cb_data->mode = mode;
 
 
     if(mode == RECV) {
@@ -182,9 +155,8 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
         }
         break;
     case NOP:
-        // Prepare a NOP operation
         io_uring_prep_nop(sqe);
-        io_uring_sqe_set_data(sqe, cb_data_nop);
+        io_uring_sqe_set_data(sqe, cb_data);
         break;
     case WRITE:
         /* not supported directly via event_add, use uring_shim_write */
@@ -221,13 +193,11 @@ int uring_shim_read_copy(uring_shim_t *shim, int fd, void *buf, size_t len) {
 
     buffer_info_t *buf_info = shim->fds[fd];
     if (buf_info == NULL) {
-        //fprintf(stderr, "Buffer info not found for fd %d (after printing list)\n", fd); // Debug
         errno = EAGAIN; // No data available
         return -1;
     }
 
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-        fprintf(stderr, "Buffer id is -1 for fd %d\n", fd); // Debug
         buffer_info_t *next = buf_info->next;
         size_t ret = buf_info->len; // This might be error code or 0 for EOF
         free(buf_info);
@@ -360,7 +330,6 @@ int uring_shim_handler(uring_shim_t *shim) {
         int buf_idx = 0;
 
         if (cb_data && cb_data->mode == CANCEL) {
-            fprintf(stderr, "fd=%d event monitoring cancelled with res=%d (%s)\n", cb_data->sockfd, cqe->res, cqe->res < 0 ? strerror(-cqe->res) : "OK");
             free(cb_data);
             cb_data = NULL;
         }
@@ -404,6 +373,7 @@ int uring_shim_handler(uring_shim_t *shim) {
             if (cb_data && cb_data->handler != NULL && cb_data->mode == NOP && cqe->res == 0) {
                 cb_data->handler(cb_data->user_data);
                 io_uring_cq_advance(&shim->ring, 1);
+                free(cb_data);
                 continue;
             }
             uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL);
