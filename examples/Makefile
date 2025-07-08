@@ -1,7 +1,7 @@
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -g -pthread -I..
-LDFLAGS = -L../build -Wl,-rpath=../build -luring_shim -luring -levent -levent_pthreads
+LDFLAGS = -L../build -Wl,-rpath=/usr/lib -luring_shim -luring -levent -levent_pthreads
 
 # Source files
 SERVER_SRC = server.c
