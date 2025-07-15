@@ -209,6 +209,7 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
         size_t ret = buf_info->len;
         free(buf_info);
+        shim->fds[mask_fd(fd)] = NULL;
         return ret;
     }
 
@@ -217,6 +218,7 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
     recycle_buffer(shim, buf_info);
     size_t ret = buf_info->len;
     free(buf_info);
+    shim->fds[mask_fd(fd)] = NULL;
     
     return ret;
 }
@@ -248,6 +250,7 @@ size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
         size_t ret = buf_info->len;
         free(buf_info);
+        shim->fds[mask_fd(fd)] = NULL;
         return ret;
     }
 
@@ -263,6 +266,7 @@ size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
     io_uring_buf_ring_advance(shim->br, 1);
     size_t ret = buf_info->len;
     free(buf_info);
+    shim->fds[mask_fd(fd)] = NULL;
     
     return ret;
 }
@@ -352,4 +356,36 @@ int uring_shim_handler(uring_shim_t *shim) {
     }
     io_uring_submit(&shim->ring);
     return 0;
+}
+
+void uring_shim_cleanup(uring_shim_t *shim) {
+    
+    if (shim->br) {
+        io_uring_free_buf_ring(&shim->ring, shim->br, shim->buf_count, shim->bgid);
+        shim->br = NULL;
+    }
+    
+    if (shim->event_fd >= 0) {
+        io_uring_unregister_eventfd(&shim->ring);
+        close(shim->event_fd);
+        shim->event_fd = -1;
+    }
+    
+    io_uring_queue_exit(&shim->ring);
+
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (shim->fds[i]) {
+            printf("Cleaning up fd %d\n", i);
+            free(shim->fds[i]);
+            printf("fd %d cleaned up\n", i);
+            shim->fds[i] = NULL;
+        }
+    }
+
+    if (shim->buffers) {
+        printf("Cleaning up buffers\n");
+        free(shim->buffers);
+        printf("Buffers cleaned up\n");
+        shim->buffers = NULL;
+    }
 }

@@ -55,6 +55,7 @@ enum io_mode {
 int uring_shim_init(uring_shim_t *shim, int queue_depth);
 int uring_shim_setup(uring_shim_t *shim, int bgid, unsigned int buf_count, unsigned int buf_size);
 int uring_shim_setup_buffer_ring(uring_shim_t *shim, int bgid);
+void uring_shim_cleanup(uring_shim_t *shim);
 
 int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data);
 int uring_shim_handler(uring_shim_t *shim);
