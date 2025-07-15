@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -fPIC -O2
+CFLAGS = -Wall -fPIC -O3
 LDFLAGS = -shared
 TARGET = build/liburing_shim.so 
 SRCS = uring_shim.c

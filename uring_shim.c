@@ -1,5 +1,5 @@
-#include "uring_shim.h" // Include the header file
-#include <errno.h>     // For strerror
+#include "uring_shim.h"
+#include <errno.h>
 
 // Core initialization functions
 int uring_shim_init(uring_shim_t *shim, int queue_depth) {
@@ -14,19 +14,19 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth) {
         fprintf(stderr, "io_uring_queue_init_params: %s\n", strerror(-ret));
         return -1;
     }
-    // Create eventfd for io_uring notifications[1]
+    // Create eventfd for io_uring notifications
     shim->event_fd = eventfd(0, EFD_CLOEXEC);
     if (shim->event_fd < 0) {
         perror("eventfd");
-        io_uring_queue_exit(&shim->ring); // Clean up ring on error
+        io_uring_queue_exit(&shim->ring);
         return -1;
     }
 
-    // Register eventfd with io_uring[1][9]
+    // Register eventfd with io_uring
     if (io_uring_register_eventfd(&shim->ring, shim->event_fd) < 0) {
         perror("io_uring_register_eventfd");
-        close(shim->event_fd); // Clean up event_fd
-        io_uring_queue_exit(&shim->ring); // Clean up ring
+        close(shim->event_fd);
+        io_uring_queue_exit(&shim->ring);
         return -1;
     }
     
@@ -59,7 +59,7 @@ int uring_shim_setup_buffer_ring(uring_shim_t *uring_shim, int bgid) {
         return -1;
     }
     
-    // Setup the buffer ring structure (handled by io_uring_setup_buf_ring)
+    // Setup the buffer ring structure
     int ret;
     buf_ring = io_uring_setup_buf_ring(&uring_shim->ring, uring_shim->buf_count, bgid, 0, &ret);
     if (!buf_ring) {
@@ -73,13 +73,12 @@ int uring_shim_setup_buffer_ring(uring_shim_t *uring_shim, int bgid) {
     for (unsigned int i = 0; i < uring_shim->buf_count; i++) {
         char *buf = uring_shim->buffers + (i * uring_shim->buf_size);
         io_uring_buf_ring_add(buf_ring, 
-            buf, // buffer address
-            uring_shim->buf_size, // buffer length
-            i, // buffer ID
+            buf,
+            uring_shim->buf_size,
+            i,
             io_uring_buf_ring_mask(uring_shim->buf_count),
-            i); // ring buffer offset
+            i);
     }
-
 
     // Make buffers visible to the kernel
     io_uring_buf_ring_advance(buf_ring, uring_shim->buf_count);
@@ -160,7 +159,7 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
         io_uring_sqe_set_data(sqe, cb_data);
         break;
     case WRITE:
-        /* not supported directly via event_add, use uring_shim_write */
+        /* not supported */
         fprintf(stderr, "WRITE mode not supported directly in uring_shim_event_add, use uring_shim_write\n");
         free(cb_data);
         return -1;
@@ -178,138 +177,96 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
         return -1;
         break;
     }
-    // Set up the SQE for the event
+
     io_uring_submit(&shim->ring);
     return 0;
 }
 
-int uring_shim_read_copy(uring_shim_t *shim, int fd, void *buf, size_t len) {
-    if (fd < 0 || fd >= MAX_FDS) {
+size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
+
+    if (fd < 0) {
         fprintf(stderr, "Invalid fd %d\n", fd);
         return -1;
     }
-    if (len == 0) { // Changed from <= 0 to == 0, as len is size_t (unsigned)
+
+    if (len == 0) {
         return 0;
     }
 
-    buffer_info_t *buf_info = shim->fds[fd];
-    if (buf_info == NULL) {
-        errno = EAGAIN; // No data available
+    buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
+
+    // No data available
+    if (!buf_info) {
+        errno = EAGAIN; 
+        return EAGAIN;
+    }
+
+    if (len < buf_info->len) {
+        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
         return -1;
     }
 
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-        buffer_info_t *next = buf_info->next;
-        size_t ret = buf_info->len; // This might be error code or 0 for EOF
+        size_t ret = buf_info->len;
         free(buf_info);
-        shim->fds[fd] = next;
-        return ret; // Return the stored result (e.g. 0 for EOF, or error code)
+        return ret;
     }
 
-    // Calculate available data in current buffer
-    size_t available = buf_info->len - buf_info->read_offset;
-
-    if (available == 0) {
-        // Current buffer is fully consumed, move to next
-        buffer_info_t *next = buf_info->next;
-        recycle_buffer(shim, buf_info);
-        free(buf_info);
-        shim->fds[fd] = next;
-        
-        // Recursively try next buffer
-        return uring_shim_read(shim, fd, buf, len);
-    }
-
-    // Determine how much to read
-    size_t to_read = (len < available) ? len : available;
+    memcpy(buf, buf_info->buf_addr, buf_info->len);
     
-    // Copy data from current read position
-    char *read_pos = buf_info->buf_addr + buf_info->read_offset;
-
-    memcpy(buf, read_pos, to_read);
+    recycle_buffer(shim, buf_info);
+    size_t ret = buf_info->len;
+    free(buf_info);
     
-    // Update read offset
-    buf_info->read_offset += to_read;
-    
-    // If buffer is fully consumed, recycle it and move to next
-    if (buf_info->read_offset >= buf_info->len) {
-        buffer_info_t *next = buf_info->next;
-        recycle_buffer(shim, buf_info);
-        free(buf_info);
-        shim->fds[fd] = next;
-    }
-    
-    return to_read;
+    return ret;
 }
 
-int uring_shim_read(uring_shim_t *shim, int fd, void **buf, size_t len) {
-    if (fd < 0 || fd >= MAX_FDS) {
+size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
+
+    if (fd < 0) {
         fprintf(stderr, "Invalid fd %d\n", fd);
         return -1;
     }
-    if (len == 0) { // Changed from <= 0 to == 0, as len is size_t (unsigned)
+
+    if (len == 0) {
         return 0;
     }
 
-    buffer_info_t *buf_info = shim->fds[fd];
-    if (buf_info == NULL) {
-        //fprintf(stderr, "Buffer info not found for fd %d (after printing list)\n", fd); // Debug
-        errno = EAGAIN; // No data available
+    buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
+
+    // No data available
+    if (!buf_info) {
+        errno = EAGAIN; 
+        return EAGAIN;
+    }
+
+    if (len < buf_info->len) {
+        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
         return -1;
     }
 
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-        fprintf(stderr, "Buffer id is -1 for fd %d\n", fd); // Debug
-        buffer_info_t *next = buf_info->next;
-        size_t ret = buf_info->len; // This might be error code or 0 for EOF
+        size_t ret = buf_info->len;
         free(buf_info);
-        shim->fds[fd] = next;
-        return ret; // Return the stored result (e.g. 0 for EOF, or error code)
+        return ret;
     }
 
-    // Calculate available data in current buffer
-    size_t available = buf_info->len - buf_info->read_offset;
-
-    if (available == 0) {
-        // Current buffer is fully consumed, move to next
-        buffer_info_t *next = buf_info->next;
-        recycle_buffer(shim, buf_info);
-        free(buf_info);
-        shim->fds[fd] = next;
-        
-        // Recursively try next buffer
-        return uring_shim_read(shim, fd, buf, len);
-    }
-
-    // Determine how much to read
-    size_t to_read = (len < available) ? len : available;
+    char **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
+    *buf = buf_info->buf_addr;
     
-    // Copy data from current read position
-    char *read_pos = buf_info->buf_addr + buf_info->read_offset;
-
-    void **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
-    *buf = read_pos;
-    
-    // Update read offset
-    buf_info->read_offset += to_read;
-    
-    // If buffer is fully consumed, recycle it and move to next
-    if (buf_info->read_offset >= buf_info->len) {
-        buffer_info_t *next = buf_info->next;
-        // recycle_buffer(shim, buf_info);
-        io_uring_buf_ring_add(shim->br,
+    io_uring_buf_ring_add(shim->br,
             *temp_buf,
             shim->buf_size,
             buf_info->buf_id,
             io_uring_buf_ring_mask(shim->buf_count),
             0);
-        io_uring_buf_ring_advance(shim->br, 1);
-        free(buf_info);
-        shim->fds[fd] = next;
-    }
+    io_uring_buf_ring_advance(shim->br, 1);
+    size_t ret = buf_info->len;
+    free(buf_info);
     
-    return to_read;
+    return ret;
 }
+
 
 // The main event loop function
 int uring_shim_handler(uring_shim_t *shim) {
@@ -334,7 +291,7 @@ int uring_shim_handler(uring_shim_t *shim) {
             free(cb_data);
             cb_data = NULL;
         }
-        // Process the completion
+        
         else if (cqe->res > 0) { // res can be 0 for EOF on recv
             if (cqe->flags & IORING_CQE_F_BUFFER) {
                 buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
@@ -343,10 +300,9 @@ int uring_shim_handler(uring_shim_t *shim) {
                 buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
                 if (!new_info) {
                     fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
-                    // Error handling: potentially recycle buffer if not stored
                     return -1;
                 } 
-                append_buffer_info(&shim->fds[cb_data->sockfd], new_info);
+                shim->fds[mask_fd(cb_data->sockfd)] = new_info;
             }
         
             if (cb_data && cb_data->handler != NULL) {
@@ -368,15 +324,14 @@ int uring_shim_handler(uring_shim_t *shim) {
             }
         }
         else {
-            if (cqe->res < 0) {
-                fprintf(stderr, "CQE error for fd=%d: %s (res=%d)\n", cb_data ? cb_data->sockfd : -1, strerror(-cqe->res), cqe->res);
-            }
+
             if (cb_data && cb_data->handler != NULL && cb_data->mode == NOP && cqe->res == 0) {
                 cb_data->handler(cb_data->user_data);
                 io_uring_cq_advance(&shim->ring, 1);
                 free(cb_data);
                 continue;
             }
+
             uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL);
             buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
             if (!new_info) {
@@ -384,8 +339,9 @@ int uring_shim_handler(uring_shim_t *shim) {
                 free(cb_data);
                 return -1;
             }
-            // Append new buffer info to the linked list
-            append_buffer_info(&shim->fds[cb_data->sockfd], new_info);
+            
+            shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+
             if (cb_data->handler != NULL) {
                 cb_data->handler(cb_data->user_data);
             }
