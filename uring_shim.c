@@ -201,16 +201,16 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
         return EAGAIN;
     }
 
-    if (len < buf_info->len) {
-        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
-        return -1;
-    }
-
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
         size_t ret = buf_info->len;
         free(buf_info);
         shim->fds[mask_fd(fd)] = NULL;
         return ret;
+    }
+
+    if (len < buf_info->len) {
+        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+        return -1;
     }
 
     memcpy(buf, buf_info->buf_addr, buf_info->len);
@@ -242,17 +242,18 @@ size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
         return EAGAIN;
     }
 
-    if (len < buf_info->len) {
-        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
-        return -1;
-    }
-
     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
         size_t ret = buf_info->len;
         free(buf_info);
         shim->fds[mask_fd(fd)] = NULL;
         return ret;
     }
+
+    if (len < buf_info->len) {
+        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+        return -1;
+    }
+
 
     char **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
     *buf = buf_info->buf_addr;
