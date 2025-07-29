@@ -15,7 +15,7 @@
 #define DEFAULT_BUFFERS_COUNT 128
 #define MAX_FDS 1024
 
-typedef void (*process_handler)(void *user_data);
+typedef void (*process_handler)(void *user_data, int fd);
 
 typedef struct buffer_info {
     int buf_id;
@@ -50,15 +50,18 @@ enum io_mode {
     NOP,
     WRITE,
     CANCEL,
+    ACCEPT,
+    POLL,
 };
 
-int uring_shim_init(uring_shim_t *shim, int queue_depth);
+int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd);
 int uring_shim_setup(uring_shim_t *shim, int bgid, unsigned int buf_count, unsigned int buf_size);
 int uring_shim_setup_buffer_ring(uring_shim_t *shim, int bgid);
 void uring_shim_cleanup(uring_shim_t *shim);
 
 int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data);
 int uring_shim_handler(uring_shim_t *shim);
+int uring_poll(uring_shim_t *shim, int timeout_usec);
 int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe *sqe);
 
 int uring_shim_recv_multishot(callback_data_t *cb_data, struct io_uring_sqe *sqe, int bgid);

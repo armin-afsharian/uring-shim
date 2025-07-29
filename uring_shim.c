@@ -1,8 +1,9 @@
 #include "uring_shim.h"
 #include <errno.h>
+#include <poll.h>
 
 // Core initialization functions
-int uring_shim_init(uring_shim_t *shim, int queue_depth) {
+int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
     
     // Setup io_uring
     struct io_uring_params params = {0};
@@ -14,20 +15,23 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth) {
         fprintf(stderr, "io_uring_queue_init_params: %s\n", strerror(-ret));
         return -1;
     }
-    // Create eventfd for io_uring notifications
-    shim->event_fd = eventfd(0, EFD_CLOEXEC);
-    if (shim->event_fd < 0) {
-        perror("eventfd");
-        io_uring_queue_exit(&shim->ring);
-        return -1;
-    }
 
-    // Register eventfd with io_uring
-    if (io_uring_register_eventfd(&shim->ring, shim->event_fd) < 0) {
-        perror("io_uring_register_eventfd");
-        close(shim->event_fd);
-        io_uring_queue_exit(&shim->ring);
-        return -1;
+    if(use_eventfd) {
+        shim->event_fd = eventfd(0, EFD_CLOEXEC);
+        if (shim->event_fd < 0) {
+            perror("eventfd");
+            io_uring_queue_exit(&shim->ring);
+            return -1;
+        }
+
+        if (io_uring_register_eventfd(&shim->ring, shim->event_fd) < 0) {
+            perror("io_uring_register_eventfd");
+            close(shim->event_fd);
+            io_uring_queue_exit(&shim->ring);
+            return -1;
+        }
+    } else {
+        shim->event_fd = -1;
     }
     
     return shim->event_fd;
@@ -112,6 +116,20 @@ int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe *sqe) 
     return 0;
 }
 
+int uring_shim_event_accept(callback_data_t *cb_data, struct io_uring_sqe *sqe) {
+    io_uring_prep_multishot_accept(sqe, cb_data->sockfd, NULL, NULL, 0);
+    io_uring_sqe_set_data(sqe, cb_data);
+    
+    return 0;
+}
+
+int uring_shim_event_poll(callback_data_t *cb_data, struct io_uring_sqe *sqe) {
+    io_uring_prep_poll_multishot(sqe, cb_data->sockfd, POLLIN);
+    io_uring_sqe_set_data(sqe, cb_data);
+    
+    return 0;
+}
+
 // Event handling functions
 int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data) {
     struct io_uring_sqe *sqe;
@@ -167,6 +185,20 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
     case CANCEL:
         if (uring_shim_event_cancel(cb_data, sqe) < 0) {
             fprintf(stderr, "Failed to cancel event\n");
+            free(cb_data);
+            return -1;
+        }
+        break;
+    case ACCEPT:
+        if(uring_shim_event_accept(cb_data, sqe) < 0) {
+            fprintf(stderr, "Failed to add accept event\n");
+            free(cb_data);
+            return -1;
+        }
+        break;
+    case POLL:
+        if(uring_shim_event_poll(cb_data, sqe) < 0) {
+            fprintf(stderr, "Failed to add poll event\n");
             free(cb_data);
             return -1;
         }
@@ -272,11 +304,107 @@ size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
     return ret;
 }
 
+int uring_poll(uring_shim_t *shim, int timeout_usec) {
+    struct io_uring_cqe *cqe;
+    struct __kernel_timespec ts;
+    struct __kernel_timespec *ts_ptr = NULL;
+
+    if(timeout_usec) {
+        ts.tv_sec = timeout_usec / 1000000;
+        ts.tv_nsec = (timeout_usec % 1000000) * 1000;
+        ts_ptr = &ts;
+    }
+   
+    int ret = io_uring_submit_and_wait_timeout(&shim->ring, &cqe, 1, ts_ptr, NULL);
+    if(ret >= 0 || ret == -ETIME) {
+        return uring_shim_handler(shim);
+    } else {
+        fprintf(stderr, "io_uring_submit_and_wait_timeout failed: %s\n", strerror(-ret));
+        return -1;
+    }
+
+}
+
+int handle_recv_multishot_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
+    char *buf_addr = NULL;
+    int buf_idx = 0;
+    if (cqe->flags & IORING_CQE_F_BUFFER) {
+        buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+        buf_addr = shim->buffers + (buf_idx * shim->buf_size);
+
+        buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
+        if (!new_info) {
+            fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
+            return -1;
+        } 
+        shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+    }
+
+    if (cb_data && cb_data->handler != NULL) {
+        cb_data->handler(cb_data->user_data, cb_data->sockfd);
+    } else {
+        fprintf(stderr, "No handler set for fd %d\n", cb_data ? cb_data->sockfd : -1);
+        return -1;
+    }
+
+    if (!(cqe->flags & IORING_CQE_F_MORE)) {
+        if (uring_shim_event_add(shim, cb_data->sockfd, 
+            RECV_MULTIISHOT, cb_data->handler, cb_data->user_data) < 0) {
+            fprintf(stderr, "Failed to re-arm multishot receive for fd %d\n", cb_data->sockfd);
+            free(cb_data);
+            return -1;
+        }
+        free(cb_data);
+    }
+    
+    return 0;
+}
+
+int handle_accept_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
+    int new_sockfd = cqe->res;
+    if (cb_data && cb_data->handler) {
+        cb_data->handler(cb_data->user_data, new_sockfd);
+    } else {
+        fprintf(stderr, "No handler set for accept event on fd %d\n", cb_data->sockfd);
+    }
+
+    if (!(cqe->flags & IORING_CQE_F_MORE)) {
+        if (uring_shim_event_add(shim, cb_data->sockfd, 
+            ACCEPT, cb_data->handler, cb_data->user_data) < 0) {
+            fprintf(stderr, "Failed to re-arm multishot receive for fd %d\n", cb_data->sockfd);
+            free(cb_data);
+            return -1;
+        }
+        free(cb_data);
+    }
+
+    return 0;
+}
+
+int handle_poll_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
+    if (cb_data && cb_data->handler) {
+        cb_data->handler(cb_data->user_data, cb_data->sockfd);
+    } else {
+        fprintf(stderr, "No handler set for poll event on fd %d\n", cb_data->sockfd);
+    }
+
+    if (!(cqe->flags & IORING_CQE_F_MORE)) {
+        if (uring_shim_event_add(shim, cb_data->sockfd, 
+            POLL, cb_data->handler, cb_data->user_data) < 0) {
+            fprintf(stderr, "Failed to re-arm poll event for fd %d\n", cb_data->sockfd);
+            free(cb_data);
+            return -1;
+        }
+        free(cb_data);
+    }
+
+    return 0;
+}
 
 // The main event loop function
 int uring_shim_handler(uring_shim_t *shim) {
     eventfd_t v;
-    if (eventfd_read(shim->event_fd, &v) < 0) {
+    if (shim->event_fd > 0 && eventfd_read(shim->event_fd, &v) < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0; // No event, not an error
         }
@@ -289,49 +417,48 @@ int uring_shim_handler(uring_shim_t *shim) {
     
     io_uring_for_each_cqe(&shim->ring, head, cqe) {
         callback_data_t *cb_data = (callback_data_t *)io_uring_cqe_get_data(cqe);
-        char *buf_addr = NULL;
-        int buf_idx = 0;
 
         if (cb_data && cb_data->mode == CANCEL) {
             free(cb_data);
             cb_data = NULL;
         }
         
-        else if (cqe->res > 0) { // res can be 0 for EOF on recv
-            if (cqe->flags & IORING_CQE_F_BUFFER) {
-                buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
-                buf_addr = shim->buffers + (buf_idx * shim->buf_size);
+        else if (cqe->res > 0) { 
+            switch (cb_data->mode)
+            {
+                case RECV_MULTIISHOT:
+                    if(handle_recv_multishot_event(shim, cb_data, cqe) < 0) {
+                        fprintf(stderr, "Failed to handle multishot receive for fd %d\n", cb_data->sockfd);
+                        free(cb_data);
+                        return -1;
+                    }
+                    break;
 
-                buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
-                if (!new_info) {
-                    fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
-                    return -1;
-                } 
-                shim->fds[mask_fd(cb_data->sockfd)] = new_info;
-            }
-        
-            if (cb_data && cb_data->handler != NULL) {
-                cb_data->handler(cb_data->user_data);
-            } else {
-                fprintf(stderr, "No handler set for fd %d\n", cb_data ? cb_data->sockfd : -1);
-                return -1;
-            }
-
-            // Check if multishot has terminated
-            if (cb_data->mode == RECV_MULTIISHOT && !(cqe->flags & IORING_CQE_F_MORE)) {
-                if (uring_shim_event_add(shim, cb_data->sockfd, 
-                    RECV_MULTIISHOT, cb_data->handler, cb_data->user_data) < 0) {
-                    fprintf(stderr, "Failed to re-arm multishot receive for fd %d\n", cb_data->sockfd);
+                case ACCEPT:
+                    if(handle_accept_event(shim, cb_data, cqe) < 0) {
+                        fprintf(stderr, "Failed to handle accept event for fd %d\n", cb_data->sockfd);
+                        free(cb_data);
+                        return -1;
+                    }
+                    break;
+                case POLL:
+                    if(handle_poll_event(shim, cb_data, cqe) < 0) {
+                        fprintf(stderr, "Failed to handle poll event for fd %d\n", cb_data->sockfd);
+                        free(cb_data);
+                        return -1;
+                    }
+                    break;
+                default:
+                    fprintf(stderr, "Unhandled mode %d for fd %d\n", cb_data->mode, cb_data->sockfd);
                     free(cb_data);
                     return -1;
-                }
-                free(cb_data);
+                    break;
             }
         }
         else {
 
             if (cb_data && cb_data->handler != NULL && cb_data->mode == NOP && cqe->res == 0) {
-                cb_data->handler(cb_data->user_data);
+                cb_data->handler(cb_data->user_data, cb_data->sockfd);
                 io_uring_cq_advance(&shim->ring, 1);
                 free(cb_data);
                 continue;
@@ -348,7 +475,7 @@ int uring_shim_handler(uring_shim_t *shim) {
             shim->fds[mask_fd(cb_data->sockfd)] = new_info;
 
             if (cb_data->handler != NULL) {
-                cb_data->handler(cb_data->user_data);
+                cb_data->handler(cb_data->user_data, cb_data->sockfd);
             }
             free(cb_data);
         }
