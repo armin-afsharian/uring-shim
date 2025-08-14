@@ -102,9 +102,11 @@ int uring_shim_recv_multishot(callback_data_t *cb_data, struct io_uring_sqe *sqe
     return 0;
 }
 
-void uring_shim_write(callback_data_t *cb_data, char* buffer, size_t len, struct io_uring_sqe *sqe) {
-    io_uring_prep_write(sqe, cb_data->sockfd, buffer, len, 0);
+int uring_shim_send(callback_data_t *cb_data, void* buffer, size_t len, struct io_uring_sqe *sqe) {
+    io_uring_prep_send(sqe, cb_data->sockfd, buffer, len, 0);
     io_uring_sqe_set_data(sqe, cb_data);
+    
+    return 0;
 }
 
 int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe *sqe) {
@@ -131,7 +133,7 @@ int uring_shim_event_poll(callback_data_t *cb_data, struct io_uring_sqe *sqe) {
 }
 
 // Event handling functions
-int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data) {
+int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data, void *buf, size_t len) {
     struct io_uring_sqe *sqe;
     
     sqe = io_uring_get_sqe(&shim->ring);
@@ -176,11 +178,12 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
         io_uring_prep_nop(sqe);
         io_uring_sqe_set_data(sqe, cb_data);
         break;
-    case WRITE:
-        /* not supported */
-        fprintf(stderr, "WRITE mode not supported directly in uring_shim_event_add, use uring_shim_write\n");
-        free(cb_data);
-        return -1;
+    case SEND:
+        if (uring_shim_send(cb_data, buf, len, sqe) < 0) {
+            fprintf(stderr, "Failed to add send event\n");
+            free(cb_data);
+            return -1;
+        }
         break;
     case CANCEL:
         if (uring_shim_event_cancel(cb_data, sqe) < 0) {
@@ -225,84 +228,111 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
         return 0;
     }
 
-    buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
+    // buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
 
-    // No data available
-    if (!buf_info) {
+    // // No data available
+    // if (!buf_info) {
+    //     errno = EAGAIN; 
+    //     return EAGAIN;
+    // }
+
+    if (shim->cqe == NULL) {
         errno = EAGAIN; 
-        return EAGAIN;
-    }
-
-    if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-        size_t ret = buf_info->len;
-        free(buf_info);
-        shim->fds[mask_fd(fd)] = NULL;
-        return ret;
-    }
-
-    if (len < buf_info->len) {
-        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
         return -1;
     }
 
-    memcpy(buf, buf_info->buf_addr, buf_info->len);
-    
-    recycle_buffer(shim, buf_info);
-    size_t ret = buf_info->len;
-    free(buf_info);
-    shim->fds[mask_fd(fd)] = NULL;
-    
-    return ret;
-}
+    // if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
+    //     size_t ret = buf_info->len;
+    //     free(buf_info);
+    //     shim->fds[mask_fd(fd)] = NULL;
+    //     return ret;
+    // }
 
-size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
+    // if (len < buf_info->len) {
+    //     fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+    //     return -1;
+    // }
 
-    if (fd < 0) {
-        fprintf(stderr, "Invalid fd %d\n", fd);
-        return -1;
-    }
+    char *buf_addr = NULL;
+    int buf_idx = 0;
+    buf_idx = shim->cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+    buf_addr = shim->buffers + (buf_idx * shim->buf_size);
 
-    if (len == 0) {
-        return 0;
-    }
+    size_t size = shim->cqe->res;
 
-    buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
-
-    // No data available
-    if (!buf_info) {
-        errno = EAGAIN; 
-        return EAGAIN;
-    }
-
-    if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-        size_t ret = buf_info->len;
-        free(buf_info);
-        shim->fds[mask_fd(fd)] = NULL;
-        return ret;
-    }
-
-    if (len < buf_info->len) {
-        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+    if (len < size) {
+        // fprintf(stderr, "Invalid read length: %zu, len should be >= cqe->res %d\n", len, size);
         return -1;
     }
 
 
-    char **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
-    *buf = buf_info->buf_addr;
+    memcpy(buf, buf_addr, size);
     
+    // recycle_buffer(shim, buf_info);
+    // size_t ret = buf_info->len;
+    // free(buf_info);
+    // shim->fds[mask_fd(fd)] = NULL;
+
     io_uring_buf_ring_add(shim->br,
-            *temp_buf,
+            buf_addr,
             shim->buf_size,
-            buf_info->buf_id,
+            buf_idx,
             io_uring_buf_ring_mask(shim->buf_count),
             0);
     io_uring_buf_ring_advance(shim->br, 1);
-    size_t ret = buf_info->len;
-    free(buf_info);
-    shim->fds[mask_fd(fd)] = NULL;
+    shim->cqe = NULL;
     
-    return ret;
+    return size;
 }
+
+// size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
+
+//     if (fd < 0) {
+//         fprintf(stderr, "Invalid fd %d\n", fd);
+//         return -1;
+//     }
+
+//     if (len == 0) {
+//         return 0;
+//     }
+
+//     buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
+
+//     // No data available
+//     if (!buf_info) {
+//         errno = EAGAIN; 
+//         return EAGAIN;
+//     }
+
+//     if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
+//         size_t ret = buf_info->len;
+//         free(buf_info);
+//         shim->fds[mask_fd(fd)] = NULL;
+//         return ret;
+//     }
+
+//     if (len < buf_info->len) {
+//         fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+//         return -1;
+//     }
+
+
+//     char **temp_buf = buf; // Use a temporary pointer to avoid modifying the original pointer
+//     *buf = buf_info->buf_addr;
+    
+//     io_uring_buf_ring_add(shim->br,
+//             *temp_buf,
+//             shim->buf_size,
+//             buf_info->buf_id,
+//             io_uring_buf_ring_mask(shim->buf_count),
+//             0);
+//     io_uring_buf_ring_advance(shim->br, 1);
+//     size_t ret = buf_info->len;
+//     free(buf_info);
+//     shim->fds[mask_fd(fd)] = NULL;
+    
+//     return ret;
+// }
 
 int uring_poll(uring_shim_t *shim, int timeout_usec) {
     struct io_uring_cqe *cqe;
@@ -328,17 +358,19 @@ int uring_poll(uring_shim_t *shim, int timeout_usec) {
 int handle_recv_multishot_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
     char *buf_addr = NULL;
     int buf_idx = 0;
-    if (cqe->flags & IORING_CQE_F_BUFFER) {
-        buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
-        buf_addr = shim->buffers + (buf_idx * shim->buf_size);
+    // if (cqe->flags & IORING_CQE_F_BUFFER) {
+    //     buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+    //     buf_addr = shim->buffers + (buf_idx * shim->buf_size);
 
-        buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
-        if (!new_info) {
-            fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
-            return -1;
-        } 
-        shim->fds[mask_fd(cb_data->sockfd)] = new_info;
-    }
+    //     buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
+    //     if (!new_info) {
+    //         fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
+    //         return -1;
+    //     } 
+    //     shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+    // }
+
+    shim->cqe = cqe;
 
     if (cb_data && cb_data->handler != NULL) {
         cb_data->handler(cb_data->user_data, cb_data->sockfd);
@@ -349,7 +381,7 @@ int handle_recv_multishot_event(uring_shim_t *shim, callback_data_t *cb_data, st
 
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
         if (uring_shim_event_add(shim, cb_data->sockfd, 
-            RECV_MULTIISHOT, cb_data->handler, cb_data->user_data) < 0) {
+            RECV_MULTIISHOT, cb_data->handler, cb_data->user_data, NULL, 0) < 0) {
             fprintf(stderr, "Failed to re-arm multishot receive for fd %d\n", cb_data->sockfd);
             free(cb_data);
             return -1;
@@ -370,7 +402,7 @@ int handle_accept_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_
 
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
         if (uring_shim_event_add(shim, cb_data->sockfd, 
-            ACCEPT, cb_data->handler, cb_data->user_data) < 0) {
+            ACCEPT, cb_data->handler, cb_data->user_data, NULL, 0) < 0) {
             fprintf(stderr, "Failed to re-arm multishot receive for fd %d\n", cb_data->sockfd);
             free(cb_data);
             return -1;
@@ -390,13 +422,25 @@ int handle_poll_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_ur
 
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
         if (uring_shim_event_add(shim, cb_data->sockfd, 
-            POLL, cb_data->handler, cb_data->user_data) < 0) {
+            POLL, cb_data->handler, cb_data->user_data, NULL, 0) < 0) {
             fprintf(stderr, "Failed to re-arm poll event for fd %d\n", cb_data->sockfd);
             free(cb_data);
             return -1;
         }
         free(cb_data);
     }
+
+    return 0;
+}
+
+int handle_send_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
+    if (cb_data && cb_data->handler) {
+        cb_data->handler(cb_data->user_data, cb_data->sockfd);
+    } else {
+        // fprintf(stderr, "No handler set for poll event on fd %d\n", cb_data->sockfd);
+    }
+
+    free(cb_data);
 
     return 0;
 }
@@ -448,6 +492,12 @@ int uring_shim_handler(uring_shim_t *shim) {
                         return -1;
                     }
                     break;
+                case SEND:
+                    if (handle_send_event(shim, cb_data, cqe) < 0) {
+                        fprintf(stderr, "Failed to handle send event for fd %d\n", cb_data->sockfd); 
+                        return -1;
+                    }
+                    break;
                 default:
                     fprintf(stderr, "Unhandled mode %d for fd %d\n", cb_data->mode, cb_data->sockfd);
                     free(cb_data);
@@ -464,15 +514,16 @@ int uring_shim_handler(uring_shim_t *shim) {
                 continue;
             }
 
-            uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL);
-            buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
-            if (!new_info) {
-                fprintf(stderr, "Failed to allocate buffer info\n");
-                free(cb_data);
-                return -1;
-            }
+            uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL, NULL, 0);
+            // buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
+            // if (!new_info) {
+            //     fprintf(stderr, "Failed to allocate buffer info\n");
+            //     free(cb_data);
+            //     return -1;
+            // }
             
-            shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+            // shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+            shim->cqe = cqe;
 
             if (cb_data->handler != NULL) {
                 cb_data->handler(cb_data->user_data, cb_data->sockfd);
@@ -501,14 +552,14 @@ void uring_shim_cleanup(uring_shim_t *shim) {
     
     io_uring_queue_exit(&shim->ring);
 
-    for (int i = 0; i < MAX_FDS; i++) {
-        if (shim->fds[i]) {
-            printf("Cleaning up fd %d\n", i);
-            free(shim->fds[i]);
-            printf("fd %d cleaned up\n", i);
-            shim->fds[i] = NULL;
-        }
-    }
+    // for (int i = 0; i < MAX_FDS; i++) {
+    //     if (shim->fds[i]) {
+    //         printf("Cleaning up fd %d\n", i);
+    //         free(shim->fds[i]);
+    //         printf("fd %d cleaned up\n", i);
+    //         shim->fds[i] = NULL;
+    //     }
+    // }
 
     if (shim->buffers) {
         printf("Cleaning up buffers\n");

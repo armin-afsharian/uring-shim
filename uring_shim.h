@@ -31,7 +31,8 @@ typedef struct uring_shim {
     int buf_count;                /* number of buffers */
     int buf_size;                 /* size of each buffer */
     int bgid;                     /* buffer group ID */
-    buffer_info_t *fds[MAX_FDS];  /* map of buffers */
+    // buffer_info_t *fds[MAX_FDS];  /* map of buffers */
+    struct io_uring_cqe *cqe; /* completion queue entry */
     int event_fd;
 
 } uring_shim_t;
@@ -48,7 +49,7 @@ enum io_mode {
     RECV,
     RECV_MULTIISHOT,
     NOP,
-    WRITE,
+    SEND,
     CANCEL,
     ACCEPT,
     POLL,
@@ -59,14 +60,14 @@ int uring_shim_setup(uring_shim_t *shim, int bgid, unsigned int buf_count, unsig
 int uring_shim_setup_buffer_ring(uring_shim_t *shim, int bgid);
 void uring_shim_cleanup(uring_shim_t *shim);
 
-int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data);
+int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler handler, void *user_data, void *buf, size_t len);
 int uring_shim_handler(uring_shim_t *shim);
 int uring_poll(uring_shim_t *shim, int timeout_usec);
 int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe *sqe);
 
 int uring_shim_recv_multishot(callback_data_t *cb_data, struct io_uring_sqe *sqe, int bgid);
 void uring_shim_write(callback_data_t *cb_data, char* buffer, size_t len, struct io_uring_sqe *sqe);
-size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len);
+// size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len);
 size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len);
 
 static inline void recycle_buffer(uring_shim_t *shim, buffer_info_t *buf_info) {
