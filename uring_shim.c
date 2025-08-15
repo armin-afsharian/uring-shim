@@ -470,17 +470,13 @@ void uring_shim_cleanup(uring_shim_t *shim) {
 
     for (int i = 0; i < MAX_FDS; i++) {
         if (shim->fds[i]) {
-            printf("Cleaning up fd %d\n", i);
             free(shim->fds[i]);
-            printf("fd %d cleaned up\n", i);
             shim->fds[i] = NULL;
         }
     }
 
     if (shim->buffers) {
-        printf("Cleaning up buffers\n");
         free(shim->buffers);
-        printf("Buffers cleaned up\n");
         shim->buffers = NULL;
     }
 }
