@@ -13,7 +13,7 @@
 #define DEFAULT_QUEUE_DEPTH 256
 #define DEFAULT_BUF_SIZE 4096
 #define DEFAULT_BUFFERS_COUNT 128
-#define MAX_FDS 1024
+#define MAX_FDS 1024 /* Must be a power of 2 */
 
 typedef void (*process_handler)(void *user_data, int fd);
 
@@ -31,8 +31,8 @@ typedef struct uring_shim {
     int buf_count;                /* number of buffers */
     int buf_size;                 /* size of each buffer */
     int bgid;                     /* buffer group ID */
-    // buffer_info_t *fds[MAX_FDS];  /* map of buffers */
-    struct io_uring_cqe *cqe; /* completion queue entry */
+    buffer_info_t *fds[MAX_FDS];  /* map of buffers */
+    // struct io_uring_cqe *cqe; /* completion queue entry */
     int event_fd;
 
 } uring_shim_t;

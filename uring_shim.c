@@ -15,7 +15,6 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
         fprintf(stderr, "io_uring_queue_init_params: %s\n", strerror(-ret));
         return -1;
     }
-
     if(use_eventfd) {
         shim->event_fd = eventfd(0, EFD_CLOEXEC);
         if (shim->event_fd < 0) {
@@ -23,7 +22,6 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
             io_uring_queue_exit(&shim->ring);
             return -1;
         }
-
         if (io_uring_register_eventfd(&shim->ring, shim->event_fd) < 0) {
             perror("io_uring_register_eventfd");
             close(shim->event_fd);
@@ -33,7 +31,6 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
     } else {
         shim->event_fd = -1;
     }
-    
     return shim->event_fd;
 }
 
@@ -228,61 +225,63 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
         return 0;
     }
 
-    // buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
+    buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
 
-    // // No data available
-    // if (!buf_info) {
-    //     errno = EAGAIN; 
-    //     return EAGAIN;
-    // }
-
-    if (shim->cqe == NULL) {
+    // No data available
+    if (!buf_info) {
         errno = EAGAIN; 
         return -1;
     }
 
-    // if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-    //     size_t ret = buf_info->len;
-    //     free(buf_info);
-    //     shim->fds[mask_fd(fd)] = NULL;
-    //     return ret;
-    // }
-
-    // if (len < buf_info->len) {
-    //     fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+    // if (shim->cqe == NULL) {
+    //     errno = EAGAIN; 
     //     return -1;
     // }
 
-    char *buf_addr = NULL;
-    int buf_idx = 0;
-    buf_idx = shim->cqe->flags >> IORING_CQE_BUFFER_SHIFT;
-    buf_addr = shim->buffers + (buf_idx * shim->buf_size);
+    if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
+        size_t ret = buf_info->len;
+        free(buf_info);
+        shim->fds[mask_fd(fd)] = NULL;
+        return ret;
+    }
 
-    size_t size = shim->cqe->res;
-
-    if (len < size) {
-        // fprintf(stderr, "Invalid read length: %zu, len should be >= cqe->res %d\n", len, size);
+    if (len < buf_info->len) {
+        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
         return -1;
     }
 
+    // char *buf_addr = NULL;
+    // int buf_idx = 0;
+    // buf_idx = shim->cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+    // buf_addr = shim->buffers + (buf_idx * shim->buf_size);
 
-    memcpy(buf, buf_addr, size);
     
-    // recycle_buffer(shim, buf_info);
-    // size_t ret = buf_info->len;
-    // free(buf_info);
-    // shim->fds[mask_fd(fd)] = NULL;
+    // size_t size = shim->cqe->res;
+    //  fprintf(stderr, "Buffer content (len=%zu): [%.*s]\n", size, (int)size, buf_addr);
 
-    io_uring_buf_ring_add(shim->br,
-            buf_addr,
-            shim->buf_size,
-            buf_idx,
-            io_uring_buf_ring_mask(shim->buf_count),
-            0);
-    io_uring_buf_ring_advance(shim->br, 1);
-    shim->cqe = NULL;
+    // if (len < size) {
+    //     // fprintf(stderr, "Invalid read length: %zu, len should be >= cqe->res %d\n", len, size);
+    //     return -1;
+    // }
+
+
+    memcpy(buf, buf_info->buf_addr, buf_info->len);
     
-    return size;
+    recycle_buffer(shim, buf_info);
+    size_t ret = buf_info->len;
+    free(buf_info);
+    shim->fds[mask_fd(fd)] = NULL;
+
+    // io_uring_buf_ring_add(shim->br,
+    //         buf_addr,
+    //         shim->buf_size,
+    //         buf_idx,
+    //         io_uring_buf_ring_mask(shim->buf_count),
+    //         0);
+    // io_uring_buf_ring_advance(shim->br, 1);
+    // shim->cqe = NULL;
+    
+    return ret;
 }
 
 // size_t uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
@@ -358,19 +357,19 @@ int uring_poll(uring_shim_t *shim, int timeout_usec) {
 int handle_recv_multishot_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
     char *buf_addr = NULL;
     int buf_idx = 0;
-    // if (cqe->flags & IORING_CQE_F_BUFFER) {
-    //     buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
-    //     buf_addr = shim->buffers + (buf_idx * shim->buf_size);
+    if (cqe->flags & IORING_CQE_F_BUFFER) {
+        buf_idx = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+        buf_addr = shim->buffers + (buf_idx * shim->buf_size);
 
-    //     buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
-    //     if (!new_info) {
-    //         fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
-    //         return -1;
-    //     } 
-    //     shim->fds[mask_fd(cb_data->sockfd)] = new_info;
-    // }
+        buffer_info_t *new_info = create_buffer_info(buf_idx, buf_addr, cqe->res);
+        if (!new_info) {
+            fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
+            return -1;
+        } 
+        shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+    }
 
-    shim->cqe = cqe;
+    // shim->cqe = cqe;
 
     if (cb_data && cb_data->handler != NULL) {
         cb_data->handler(cb_data->user_data, cb_data->sockfd);
@@ -453,6 +452,7 @@ int uring_shim_handler(uring_shim_t *shim) {
             return 0; // No event, not an error
         }
         perror("eventfd_read");
+        abort(); // Handle this as a critical error
         return -1;
     }
 
@@ -461,7 +461,6 @@ int uring_shim_handler(uring_shim_t *shim) {
     
     io_uring_for_each_cqe(&shim->ring, head, cqe) {
         callback_data_t *cb_data = (callback_data_t *)io_uring_cqe_get_data(cqe);
-
         if (cb_data && cb_data->mode == CANCEL) {
             free(cb_data);
             cb_data = NULL;
@@ -515,16 +514,14 @@ int uring_shim_handler(uring_shim_t *shim) {
             }
 
             uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL, NULL, 0);
-            // buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
-            // if (!new_info) {
-            //     fprintf(stderr, "Failed to allocate buffer info\n");
-            //     free(cb_data);
-            //     return -1;
-            // }
-            
-            // shim->fds[mask_fd(cb_data->sockfd)] = new_info;
-            shim->cqe = cqe;
-
+            buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
+            if (!new_info) {
+                fprintf(stderr, "Failed to allocate buffer info\n");
+                free(cb_data);
+                return -1;
+            }
+            shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+            // shim->cqe = cqe;
             if (cb_data->handler != NULL) {
                 cb_data->handler(cb_data->user_data, cb_data->sockfd);
             }
