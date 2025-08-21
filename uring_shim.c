@@ -385,7 +385,7 @@ int handle_send_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_ur
     if (cb_data && cb_data->handler) {
         cb_data->handler(cb_data->user_data, cb_data->sockfd);
     } else {
-        fprintf(stderr, "No handler set for poll event on fd %d\n", cb_data->sockfd);
+        fprintf(stderr, "No handler set for send event on fd %d\n", cb_data->sockfd);
     }
 
     free(cb_data);
