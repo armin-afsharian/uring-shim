@@ -22,6 +22,7 @@ typedef struct buffer_info {
     char *buf_addr;
     size_t len;
     size_t offset;
+    struct buffer_info *next; // Pointer to the next buffer in the list
 } buffer_info_t;
 
 typedef struct uring_shim {
@@ -32,7 +33,7 @@ typedef struct uring_shim {
     int buf_count;                /* number of buffers */
     int buf_size;                 /* size of each buffer */
     int bgid;                     /* buffer group ID */
-    buffer_info_t *fds[MAX_FDS];  /* map of buffers */
+    buffer_info_t *fds[MAX_FDS];  /* map of buffer lists, one for each fd */
     int event_fd;
 
 } uring_shim_t;
@@ -90,6 +91,7 @@ static inline buffer_info_t* create_buffer_info(int buf_idx, char *buf_addr, int
     new_info->buf_addr = buf_addr;
     new_info->len = len;
     new_info->offset = 0;
+    new_info->next = NULL; // Initialize next pointer to NULL
     return new_info;
 }
 

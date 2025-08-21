@@ -2,6 +2,23 @@
 #include <errno.h>
 #include <poll.h>
 
+// Helper function to append a buffer_info node to the end of the list for an fd
+static inline void append_buffer_info(uring_shim_t *shim, int fd, buffer_info_t *new_info) {
+    int masked_fd = mask_fd(fd);
+    if (!shim->fds[masked_fd]) {
+        // List is empty, new_info is the new head
+        shim->fds[masked_fd] = new_info;
+    } else {
+        // Traverse to the end of the list
+        buffer_info_t *current = shim->fds[masked_fd];
+        while (current->next) {
+            current = current->next;
+        }
+        // Append the new node
+        current->next = new_info;
+    }
+}
+
 // Core initialization functions
 int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
     
@@ -215,59 +232,57 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
 }
 
 size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
-
     if (fd < 0) {
         fprintf(stderr, "Invalid fd %d\n", fd);
         return -1;
     }
-
     if (len == 0) {
         return 0;
     }
 
-    buffer_info_t *buf_info = shim->fds[mask_fd(fd)];
-
-    // No data available
-    if (!buf_info) {
-        errno = EAGAIN; 
-        return -1;
-    }
-
-    if (buf_info->buf_id == -1) { // Indicates a special condition, e.g., EOF
-        size_t ret = buf_info->len;
-        free(buf_info);
-        shim->fds[mask_fd(fd)] = NULL;
-        return ret;
-    }
-
-    // Calculate how much data is available from current offset
-    size_t available = buf_info->len - buf_info->offset;
-    if (available == 0) {
-        printf("Buffer for fd %d is fully consumed, recycling\n", fd);
-        // Buffer is fully consumed, recycle it
-        recycle_buffer(shim, buf_info);
-        free(buf_info);
-        shim->fds[mask_fd(fd)] = NULL;
+    buffer_info_t *head = shim->fds[mask_fd(fd)];
+    if (!head) {
         errno = EAGAIN;
         return -1;
     }
 
-    // Copy the minimum of requested length or available data
-    size_t to_copy = (len < available) ? len : available;
-    memcpy(buf, buf_info->buf_addr + buf_info->offset, to_copy);
-    
-    // Update offset
-    buf_info->offset += to_copy;
-    
-    // If buffer is fully consumed, recycle it and clean up
-    if (buf_info->offset >= buf_info->len) {
-        recycle_buffer(shim, buf_info);
-        free(buf_info);
-        shim->fds[mask_fd(fd)] = NULL;
+    size_t total_copied = 0;
+    char *current_buf_pos = buf;
+
+    while (total_copied < len && head) {
+        if (head->buf_id == -1) { // EOF or error condition
+            size_t ret = head->len;
+            shim->fds[mask_fd(fd)] = head->next; // Unlink the special node
+            free(head);
+            return ret; // Return the error code from the special node
+        }
+
+        size_t available = head->len - head->offset;
+        size_t to_copy = (len - total_copied < available) ? len - total_copied : available;
+
+        memcpy(current_buf_pos, head->buf_addr + head->offset, to_copy);
+        head->offset += to_copy;
+        total_copied += to_copy;
+        current_buf_pos += to_copy;
+
+        if (head->offset >= head->len) {
+            // This buffer is fully consumed, move to the next one
+            buffer_info_t *consumed_node = head;
+            head = head->next;
+            shim->fds[mask_fd(fd)] = head; // Update the head of the list
+
+            recycle_buffer(shim, consumed_node);
+            free(consumed_node);
+        }
     }
-    // Otherwise, keep the buffer_info for the next read
-    
-    return to_copy;
+
+    if (total_copied == 0) {
+        printf("No data copied for fd %d\n", fd);
+        errno = EAGAIN;
+        return -1;
+    }
+
+    return total_copied;
 }
 
 int uring_poll(uring_shim_t *shim, int timeout_usec) {
@@ -288,7 +303,6 @@ int uring_poll(uring_shim_t *shim, int timeout_usec) {
         fprintf(stderr, "io_uring_submit_and_wait_timeout failed: %s\n", strerror(-ret));
         return -1;
     }
-
 }
 
 int handle_recv_multishot_event(uring_shim_t *shim, callback_data_t *cb_data, struct io_uring_cqe *cqe) {
@@ -303,7 +317,7 @@ int handle_recv_multishot_event(uring_shim_t *shim, callback_data_t *cb_data, st
             fprintf(stderr, "Failed to allocate buffer info for fd %d\n", cb_data ? cb_data->sockfd : -1);
             return -1;
         } 
-        shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+        append_buffer_info(shim, cb_data->sockfd, new_info);
     }
 
     if (cb_data && cb_data->handler != NULL) {
@@ -451,11 +465,12 @@ int uring_shim_handler(uring_shim_t *shim) {
             uring_shim_event_add(shim, cb_data->sockfd, CANCEL, NULL, NULL, NULL, 0);
             buffer_info_t *new_info = create_buffer_info(-1, NULL, cqe->res);
             if (!new_info) {
-                fprintf(stderr, "Failed to allocate buffer info\n");
+                fprintf(stderr, "Failed to allocate buffer info for EOF/error on fd %d\n", cb_data->sockfd);
                 free(cb_data);
                 return -1;
             }
-            shim->fds[mask_fd(cb_data->sockfd)] = new_info;
+            append_buffer_info(shim, cb_data->sockfd, new_info);
+
             if (cb_data->handler != NULL) {
                 cb_data->handler(cb_data->user_data, cb_data->sockfd);
             }
@@ -484,10 +499,13 @@ void uring_shim_cleanup(uring_shim_t *shim) {
     io_uring_queue_exit(&shim->ring);
 
     for (int i = 0; i < MAX_FDS; i++) {
-        if (shim->fds[i]) {
-            free(shim->fds[i]);
-            shim->fds[i] = NULL;
+        buffer_info_t *current = shim->fds[i];
+        while (current) {
+            buffer_info_t *to_free = current;
+            current = current->next;
+            free(to_free);
         }
+        shim->fds[i] = NULL;
     }
 
     if (shim->buffers) {
