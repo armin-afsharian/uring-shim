@@ -240,19 +240,34 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
         return ret;
     }
 
-    if (len < buf_info->len) {
-        fprintf(stderr, "Invalid read length: %zu, len should be >= buffer length\n", len);
+    // Calculate how much data is available from current offset
+    size_t available = buf_info->len - buf_info->offset;
+    if (available == 0) {
+        printf("Buffer for fd %d is fully consumed, recycling\n", fd);
+        // Buffer is fully consumed, recycle it
+        recycle_buffer(shim, buf_info);
+        free(buf_info);
+        shim->fds[mask_fd(fd)] = NULL;
+        errno = EAGAIN;
         return -1;
     }
 
-    memcpy(buf, buf_info->buf_addr, buf_info->len);
+    // Copy the minimum of requested length or available data
+    size_t to_copy = (len < available) ? len : available;
+    memcpy(buf, buf_info->buf_addr + buf_info->offset, to_copy);
     
-    recycle_buffer(shim, buf_info);
-    size_t ret = buf_info->len;
-    free(buf_info);
-    shim->fds[mask_fd(fd)] = NULL;
+    // Update offset
+    buf_info->offset += to_copy;
     
-    return ret;
+    // If buffer is fully consumed, recycle it and clean up
+    if (buf_info->offset >= buf_info->len) {
+        recycle_buffer(shim, buf_info);
+        free(buf_info);
+        shim->fds[mask_fd(fd)] = NULL;
+    }
+    // Otherwise, keep the buffer_info for the next read
+    
+    return to_copy;
 }
 
 int uring_poll(uring_shim_t *shim, int timeout_usec) {

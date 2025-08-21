@@ -21,6 +21,7 @@ typedef struct buffer_info {
     int buf_id;
     char *buf_addr;
     size_t len;
+    size_t offset;
 } buffer_info_t;
 
 typedef struct uring_shim {
@@ -88,6 +89,7 @@ static inline buffer_info_t* create_buffer_info(int buf_idx, char *buf_addr, int
     new_info->buf_id = buf_idx;
     new_info->buf_addr = buf_addr;
     new_info->len = len;
+    new_info->offset = 0;
     return new_info;
 }
 
