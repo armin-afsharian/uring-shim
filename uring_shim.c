@@ -24,8 +24,14 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
     
     // Setup io_uring
     struct io_uring_params params = {0};
-    params.flags = IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN | IORING_SETUP_CQSIZE;
+    params.flags = IORING_SETUP_SUBMIT_ALL | IORING_SETUP_CQSIZE;
     params.cq_entries = queue_depth * 4;    
+
+    if (use_eventfd) {
+        params.flags |= IORING_SETUP_COOP_TASKRUN;
+    } else {
+        params.flags |= IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
+    }
     
     int ret = io_uring_queue_init_params(queue_depth, &shim->ring, &params);
     if (ret < 0) {
@@ -479,7 +485,10 @@ int uring_shim_handler(uring_shim_t *shim) {
 
         io_uring_cq_advance(&shim->ring, 1);
     }
-    io_uring_submit(&shim->ring);
+
+    if (shim->event_fd > 0) {
+        io_uring_submit(&shim->ring);
+    }
     return 0;
 }
 
