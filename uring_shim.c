@@ -129,6 +129,13 @@ int uring_shim_send(callback_data_t *cb_data, void* buffer, size_t len, struct i
     return 0;
 }
 
+int uring_shim_sendmsg(callback_data_t *cb_data, const struct msghdr* msg, struct io_uring_sqe *sqe) {
+    io_uring_prep_sendmsg(sqe, cb_data->sockfd, msg, 0);
+    io_uring_sqe_set_data(sqe, cb_data);
+    
+    return 0;
+}
+
 int uring_shim_event_cancel(callback_data_t *cb_data, struct io_uring_sqe *sqe) {
 
     // Cancel the event
@@ -201,6 +208,13 @@ int uring_shim_event_add(uring_shim_t *shim, int fd, int mode, process_handler h
     case SEND:
         if (uring_shim_send(cb_data, buf, len, sqe) < 0) {
             fprintf(stderr, "Failed to add send event\n");
+            free(cb_data);
+            return -1;
+        }
+        break;
+    case SENDMSG:
+        if (uring_shim_sendmsg(cb_data, (const struct msghdr*)buf, sqe) < 0) {
+            fprintf(stderr, "Failed to add sendmsg event\n");
             free(cb_data);
             return -1;
         }
@@ -451,6 +465,8 @@ int uring_shim_handler(uring_shim_t *shim) {
                         fprintf(stderr, "Failed to handle send event for fd %d\n", cb_data->sockfd); 
                         return -1;
                     }
+                    break;
+                case SENDMSG:
                     break;
                 default:
                     fprintf(stderr, "Unhandled mode %d for fd %d\n", cb_data->mode, cb_data->sockfd);

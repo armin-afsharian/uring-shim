@@ -51,6 +51,7 @@ enum io_mode {
     RECV_MULTIISHOT,
     NOP,
     SEND,
+    SENDMSG,
     CANCEL,
     ACCEPT,
     POLL,
