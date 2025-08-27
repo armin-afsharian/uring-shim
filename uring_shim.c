@@ -23,12 +23,10 @@ static inline void append_buffer_info(uring_shim_t *shim, int fd, buffer_info_t 
 int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
     
     // Setup io_uring
-    struct io_uring_params params = {0};
-    params.flags = IORING_SETUP_SUBMIT_ALL | IORING_SETUP_CQSIZE;
-    params.cq_entries = queue_depth * 4;    
+    struct io_uring_params params = {0};  
 
     if (use_eventfd) {
-        params.flags |= IORING_SETUP_COOP_TASKRUN;
+        params.flags |= IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
     } else {
         params.flags |= IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
     }
@@ -52,7 +50,7 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
             return -1;
         }
     } else {
-        shim->event_fd = -1;
+        shim->event_fd = 0;
     }
     return shim->event_fd;
 }
@@ -467,6 +465,7 @@ int uring_shim_handler(uring_shim_t *shim) {
                     }
                     break;
                 case SENDMSG:
+                    free(cb_data);
                     break;
                 default:
                     fprintf(stderr, "Unhandled mode %d for fd %d\n", cb_data->mode, cb_data->sockfd);
