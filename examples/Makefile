@@ -4,19 +4,24 @@ LDFLAGS = -L../build -Wl,-rpath=/usr/lib -luring_shim -luring -levent -levent_pt
 
 
 SERVER_SRC = server-eventfd.c
+SERVER_URING_SRC = server-native-uring.c
 SERVER_LIBEVENT_SRC = server-multithread-libevent.c
 CLIENT_SRC = client.c
 
 
 SERVER_TARGET = server-eventfd.out
+SERVER_URING_TARGET = server-native-uring.out
 SERVER_LIBEVENT_TARGET = server-multithread-libevent.out
 CLIENT_TARGET = client.out
 
 
-all: $(SERVER_TARGET) $(CLIENT_TARGET) $(SERVER_LIBEVENT_TARGET)
+all: $(SERVER_TARGET) $(SERVER_URING_TARGET) $(CLIENT_TARGET) $(SERVER_LIBEVENT_TARGET)
 
 
 $(SERVER_TARGET): $(SERVER_SRC) $(SERVER_HEADERS)
+	$(CC) $(CFLAGS) -o $@ $< $ $(LDFLAGS)
+
+$(SERVER_URING_TARGET): $(SERVER_URING_SRC) $(SERVER_HEADERS)
 	$(CC) $(CFLAGS) -o $@ $< $ $(LDFLAGS)
 
 $(SERVER_LIBEVENT_TARGET): $(SERVER_LIBEVENT_SRC) $(SERVER_HEADERS)
@@ -26,6 +31,6 @@ $(CLIENT_TARGET): $(CLIENT_SRC)
 	$(CC) $(CFLAGS) -o $@ $<
 
 clean:
-	rm -f $(SERVER_TARGET) $(CLIENT_TARGET) $(SERVER_LIBEVENT_TARGET)
+	rm -f $(SERVER_TARGET) $(SERVER_URING_TARGET) $(CLIENT_TARGET) $(SERVER_LIBEVENT_TARGET)
 
 .PHONY: all clean
