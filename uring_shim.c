@@ -2,41 +2,39 @@
 #include <errno.h>
 #include <poll.h>
 
-// Helper function to append a buffer_info node to the end of the list for an fd
 static inline void append_buffer_info(uring_shim_t *shim, int fd, buffer_info_t *new_info) {
     int masked_fd = mask_fd(fd);
     if (!shim->fds[masked_fd]) {
-        // List is empty, new_info is the new head
         shim->fds[masked_fd] = new_info;
     } else {
-        // Traverse to the end of the list
         buffer_info_t *current = shim->fds[masked_fd];
         while (current->next) {
             current = current->next;
         }
-        // Append the new node
         current->next = new_info;
     }
 }
 
-// Core initialization functions
-int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
+int uring_shim_init(uring_shim_t *shim, uring_shim_params_t *init_params) {
     
-    // Setup io_uring
     struct io_uring_params params = {0};  
 
-    if (use_eventfd) {
-        params.flags |= IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
+    if (init_params->single_issuer) {
+        params.flags |= IORING_SETUP_SINGLE_ISSUER;
+    }
+
+    if (init_params->use_eventfd || !init_params->single_issuer) {
+        params.flags |= IORING_SETUP_COOP_TASKRUN;
     } else {
-        params.flags |= IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER;
+        params.flags |= IORING_SETUP_DEFER_TASKRUN;
     }
     
-    int ret = io_uring_queue_init_params(queue_depth, &shim->ring, &params);
+    int ret = io_uring_queue_init_params(init_params->queue_depth, &shim->ring, &params);
     if (ret < 0) {
         fprintf(stderr, "io_uring_queue_init_params: %s\n", strerror(-ret));
         return -1;
     }
-    if(use_eventfd) {
+    if(init_params->use_eventfd) {
         shim->event_fd = eventfd(0, EFD_CLOEXEC);
         if (shim->event_fd < 0) {
             perror("eventfd");
@@ -52,23 +50,19 @@ int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd) {
     } else {
         shim->event_fd = 0;
     }
-    return shim->event_fd;
-}
 
-int uring_shim_setup(uring_shim_t *shim, int bgid, 
-        unsigned int buf_count, unsigned int buf_size) {
-    shim->bgid = bgid;
-    shim->buf_count = buf_count;
-    shim->buf_size = buf_size;
+    shim->bgid = init_params->bgid;
+    shim->buf_count = init_params->buf_count;
+    shim->buf_size = init_params->buf_size;
     
-    // Setup buffer ring
-    int ret = uring_shim_setup_buffer_ring(shim, bgid);
+    ret = uring_shim_setup_buffer_ring(shim, init_params->bgid);
     if (ret < 0) {
         fprintf(stderr, "Failed to setup buffer ring\n");
+        uring_shim_cleanup(shim);
         return -1;
     }
-    
-    return 0;
+
+    return shim->event_fd;
 }
 
 int uring_shim_setup_buffer_ring(uring_shim_t *uring_shim, int bgid) {
@@ -81,7 +75,6 @@ int uring_shim_setup_buffer_ring(uring_shim_t *uring_shim, int bgid) {
         return -1;
     }
     
-    // Setup the buffer ring structure
     int ret;
     buf_ring = io_uring_setup_buf_ring(&uring_shim->ring, uring_shim->buf_count, bgid, 0, &ret);
     if (!buf_ring) {
@@ -91,7 +84,6 @@ int uring_shim_setup_buffer_ring(uring_shim_t *uring_shim, int bgid) {
         return -1;
     }
 
-    // Add buffers to the ring
     for (unsigned int i = 0; i < uring_shim->buf_count; i++) {
         char *buf = uring_shim->buffers + (i * uring_shim->buf_size);
         io_uring_buf_ring_add(buf_ring, 
@@ -102,7 +94,6 @@ int uring_shim_setup_buffer_ring(uring_shim_t *uring_shim, int bgid) {
             i);
     }
 
-    // Make buffers visible to the kernel
     io_uring_buf_ring_advance(buf_ring, uring_shim->buf_count);
     uring_shim->br = buf_ring;
 

@@ -1,7 +1,7 @@
 #ifndef SHIM_URING
 #define SHIM_URING
 
-
+#include <sys/types.h>
 #include <liburing.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +14,15 @@
 #define DEFAULT_BUF_SIZE 4096
 #define DEFAULT_BUFFERS_COUNT 128
 #define MAX_FDS 1024 /* Must be a power of 2 */
+
+typedef struct uring_shim_params {
+    int queue_depth;
+    int use_eventfd;
+    int bgid;
+    int single_issuer;
+    unsigned int buf_count;
+    unsigned int buf_size;
+} uring_shim_params_t;
 
 typedef void (*process_handler)(void *user_data, int fd);
 
@@ -57,8 +66,7 @@ enum io_mode {
     POLL,
 };
 
-int uring_shim_init(uring_shim_t *shim, int queue_depth, int use_eventfd);
-int uring_shim_setup(uring_shim_t *shim, int bgid, unsigned int buf_count, unsigned int buf_size);
+int uring_shim_init(uring_shim_t *shim, uring_shim_params_t *params);
 int uring_shim_setup_buffer_ring(uring_shim_t *shim, int bgid);
 void uring_shim_cleanup(uring_shim_t *shim);
 

@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -23,12 +23,12 @@ typedef struct thread_context {
     struct event_base *base;
     uring_shim_t shim;
     int thread_id;
-    char* buffer;
 } thread_context_t;
 
 typedef struct conn_data {
     int fd;
     int thread_id;
+    char buffer[BUF_SIZE];
 } conn_data_t;
 
 
@@ -70,18 +70,30 @@ int setup_server_socket(int port) {
     return fd;
 }
 
-void req_handler(void *user_data) {
+void req_handler(void *user_data, int fd __attribute_maybe_unused__) {
     conn_data_t *conn_data = (conn_data_t*)user_data;
+    thread_context_t *ctx = &thread_contexts[conn_data->thread_id];
     
-    int ret = uring_shim_read(&thread_contexts[conn_data->thread_id].shim, 
-                             conn_data->fd, &thread_contexts[conn_data->thread_id].buffer, BUF_SIZE);
+    ssize_t ret = uring_shim_read_copy(&ctx->shim, conn_data->fd, conn_data->buffer, BUF_SIZE);
     if (ret <= 0) {
-        fprintf(stderr, "Error reading from fd %d: %s\n", conn_data->fd, strerror(-ret));
+        if (ret < 0 && errno != EAGAIN) {
+            fprintf(stderr, "Error reading from fd %d: %s\n", conn_data->fd, strerror(errno));
+        } else if (ret == 0) {
+            printf("Client on fd %d disconnected.\n", conn_data->fd);
+        }
         close(conn_data->fd);
         free(conn_data);
         return;
     }
-    printf("Thread %d: Read %d bytes from fd %d: %s\n", conn_data->thread_id, ret, conn_data->fd, thread_contexts[conn_data->thread_id].buffer);
+    
+    printf("Thread %d: Read %zd bytes from fd %d\n", conn_data->thread_id, ret, conn_data->fd);
+
+    ssize_t sent_bytes = send(conn_data->fd, conn_data->buffer, ret, 0);
+    if (sent_bytes < 0) {
+        perror("send");
+    } else {
+        printf("Thread %d: Echoed %zd bytes to fd %d\n", conn_data->thread_id, sent_bytes, conn_data->fd);
+    }
 }
 
 void handle_uring_event(evutil_socket_t fd __attribute_maybe_unused__, short events __attribute_maybe_unused__, void *arg) {
@@ -101,7 +113,6 @@ void handle_new_connection(evutil_socket_t fd, short events __attribute_maybe_un
         return;
     }
     
-    // Set client socket non-blocking
     int flags = fcntl(client_fd, F_GETFL, 0);
     if (fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
         perror("fcntl client");
@@ -113,36 +124,42 @@ void handle_new_connection(evutil_socket_t fd, short events __attribute_maybe_un
 
     int thread_id = (++next_thread) % MAX_THREADS;
     conn_data_t *conn_data = malloc(sizeof(conn_data_t));
+    if (!conn_data) {
+        perror("malloc conn_data");
+        close(client_fd);
+        return;
+    }
     conn_data->fd = client_fd;
     conn_data->thread_id = thread_id;
     
     uring_shim_event_add(&thread_contexts[thread_id].shim, client_fd, RECV_MULTIISHOT, 
-                         req_handler, (void *)conn_data);
+                         req_handler, (void *)conn_data, NULL, 0);
+    printf("Assigned client fd %d to thread %d\n", client_fd, thread_id);
 }
 
 void *worker_thread(void *arg) {
     thread_context_t *ctx = (thread_context_t *)arg;
     
-    // Initialize libevent for this thread
     ctx->base = event_base_new();
     if (!ctx->base) {
         fprintf(stderr, "Thread %d: Could not create event base\n", ctx->thread_id);
         return NULL;
     }
     
-    // Initialize io_uring for this thread
-    int event_fd = uring_shim_init(&ctx->shim, 256);
+    uring_shim_params_t params = {
+        .queue_depth = 256,
+        .use_eventfd = 1,
+        .bgid = ctx->thread_id,
+        .single_issuer = 0,
+        .buf_count = BUF_COUNT,
+        .buf_size = BUF_SIZE
+    };
+    int event_fd = uring_shim_init(&ctx->shim, &params);
     if (event_fd < 0) {
         fprintf(stderr, "Thread %d: Could not initialize io_uring\n", ctx->thread_id);
         return NULL;
     }
     
-    if (uring_shim_setup(&ctx->shim, ctx->thread_id, BUF_COUNT, BUF_SIZE) < 0) {
-        fprintf(stderr, "Thread %d: Error setting up uring_shim\n", ctx->thread_id);
-        return NULL;
-    }
-    
-    // Add io_uring completion event to libevent
     struct event *uring_event = event_new(ctx->base, event_fd, 
                                         EV_READ | EV_PERSIST,
                                         handle_uring_event, ctx);
@@ -155,7 +172,7 @@ void *worker_thread(void *arg) {
 }
 
 int main() {
-    // Initialize libevent with thread support
+    
     evthread_use_pthreads();
     
     server_fd = setup_server_socket(8080);
@@ -163,10 +180,9 @@ int main() {
     
     pthread_t threads[MAX_THREADS];
     
-    // Create worker threads
+
     for (int i = 0; i < MAX_THREADS; i++) {
         thread_contexts[i].thread_id = i;
-        thread_contexts[i].buffer = malloc(BUF_SIZE);
         if (pthread_create(&threads[i], NULL, worker_thread, &thread_contexts[i]) != 0) {
             error_exit("pthread_create");
         }
@@ -174,14 +190,13 @@ int main() {
 
     struct event_base *base;
     base = event_base_new();
-    // Add accept event only to first thread
+
     struct event *accept_event = event_new(base, server_fd, 
                                              EV_READ | EV_PERSIST,
                                              handle_new_connection, NULL);
     event_add(accept_event, NULL);
     event_base_dispatch(base);
-    
-    // Wait for all threads
+
     for (int i = 0; i < MAX_THREADS; i++) {
         pthread_join(threads[i], NULL);
     }
@@ -189,9 +204,10 @@ int main() {
     event_free(accept_event);
     event_base_free(base);
     for (int i = 0; i < MAX_THREADS; i++) {
-        event_base_free(thread_contexts[i].base);
-        free(thread_contexts[i].buffer);
-        io_uring_queue_exit(&thread_contexts[i].shim.ring);
+        if (thread_contexts[i].base) {
+            event_base_free(thread_contexts[i].base);
+        }
+        uring_shim_cleanup(&thread_contexts[i].shim);
     }
     close(server_fd);
     return 0;

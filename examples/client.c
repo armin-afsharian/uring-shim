@@ -43,8 +43,7 @@ int connect_to_server(const char *host, int port) {
 void setup_epoll() {
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) error_exit("epoll_create1");
-    
-    // Add stdin to epoll for user input[2]
+
     struct epoll_event ev = {
         .events = EPOLLIN,
         .data.fd = STDIN_FILENO
@@ -52,7 +51,6 @@ void setup_epoll() {
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, STDIN_FILENO, &ev) < 0)
         error_exit("epoll_ctl stdin");
     
-    // Add client socket to epoll for server responses[2]
     ev.events = EPOLLIN;
     ev.data.fd = client_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev) < 0)
@@ -62,20 +60,14 @@ void setup_epoll() {
 void handle_user_input() {
     char buffer[BUFFER_SIZE];
     if (fgets(buffer, sizeof(buffer), stdin)) {
-        
-        for (int i = 0; i < 100000; i++) {
-            // Send message to server using regular socket operations
-            char message[BUFFER_SIZE];
-            snprintf(message, sizeof(message), "test%d", i);
-            printf("Sending message from keyboard: %s\n", message);
-            ssize_t sent = send(client_fd, message, strlen(message), 0);
-            usleep(100); // Sleep for 1us
-            if (sent < 0) {
-                perror("send");
-                return;
-            }
-            printf("Message sent successfully\n");
+        ssize_t sent = send(client_fd, buffer, strlen(buffer), 0);
+        if (sent < 0) {
+            perror("send");
+            return;
         }
+    } else {
+        printf("Exiting.\n");
+        exit(0);
     }
 }
 
@@ -118,24 +110,23 @@ int main(int argc, char *argv[]) {
     client_fd = connect_to_server(server_addr, port);
     setup_epoll();
     
-    printf("Connected to server %s:%d. Type messages (Ctrl+C to exit):\n", 
+    printf("Connected to server %s:%d. Type messages and press Enter (Ctrl+D to exit):\n", 
            server_addr, port);
     
     struct epoll_event events[MAX_EVENTS];
     
-    // Main event loop using epoll[2]
+    // Main event loop using epoll
     while (1) {
         int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-        if (nfds < 0) error_exit("epoll_wait");
-
-        printf("epoll_wait returned %d\n", nfds);
+        if (nfds < 0) {
+            if (errno == EINTR) continue;
+            error_exit("epoll_wait");
+        }
         
         for (int i = 0; i < nfds; i++) {
             if (events[i].data.fd == STDIN_FILENO) {
-                printf("User input detected\n");
                 handle_user_input();
             } else if (events[i].data.fd == client_fd) {
-                printf("Server response detected\n");
                 handle_server_response();
             }
         }
