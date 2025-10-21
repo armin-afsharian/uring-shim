@@ -294,6 +294,50 @@ size_t uring_shim_read_copy(uring_shim_t *shim, int fd, char *buf, size_t len) {
     return total_copied;
 }
 
+int uring_shim_read(uring_shim_t *shim, int fd, char **buf, size_t len) {
+    if (fd < 0) {
+        fprintf(stderr, "Invalid fd %d\n", fd);
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+
+    buffer_info_t *head = shim->fds[mask_fd(fd)];
+    if (!head) {
+        errno = EAGAIN;
+        return -1;
+    }
+
+    if (head->buf_id == -1) { // EOF or error condition
+        size_t ret = head->len;
+        shim->fds[mask_fd(fd)] = head->next; // Unlink the special node
+        free(head);
+        return ret; // Return the error code from the special node
+    }
+
+    size_t available = head->len - head->offset;
+    size_t to_read = (len < available) ? len : available;
+
+    // Set the buffer pointer to the current read position
+    *buf = head->buf_addr + head->offset;
+
+    // Update offset
+    head->offset += to_read;
+
+    // If buffer is fully consumed, recycle it and move to next
+    if (head->offset >= head->len) {
+        buffer_info_t *consumed_node = head;
+        head = head->next;
+        shim->fds[mask_fd(fd)] = head; // Update the head of the list
+
+        recycle_buffer(shim, consumed_node);
+        free(consumed_node);
+    }
+
+    return to_read;
+}
+
 int uring_poll(uring_shim_t *shim, int timeout_usec) {
     struct io_uring_cqe *cqe;
     struct __kernel_timespec ts;
